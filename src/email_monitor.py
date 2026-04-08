@@ -184,12 +184,15 @@ class EmailMonitor:
 
             # 6. Archive to SharePoint
             if self._archiver:
-                year = (order.order_date or "")[:4] or "ukjent"
+                date_str = order.order_date or ""
+                year = date_str[:4] or "ukjent"
+                month = date_str[5:7] if len(date_str) >= 7 else "00"
                 json_path = self._output_dir / f"{Path(order.source_file).stem}.json"
                 try:
                     urls = self._archiver.archive_order(
                         order_number=order.order_number,
                         year=year,
+                        month=month,
                         pdf_path=pdf_path,
                         json_path=json_path if json_path.exists() else None,
                         document_type=order.document_type,

@@ -58,18 +58,19 @@ class SharePointArchiver:
         order_number: str,
         year: str,
         pdf_path: Path | str,
+        month: str = "00",
         json_path: Path | str | None = None,
         document_type: str = "purchase_order",
     ) -> list[str]:
         """Upload order documents to SharePoint.
 
-        Structure: Ordrer/{year}/{order_number}/{filename}
+        Structure: Ordrer/{year}/{month}/{order_number}/{filename}
 
         Returns list of uploaded file URLs.
         """
         self._ensure_ids()
 
-        folder_path = f"Ordrer/{year}/{order_number}"
+        folder_path = f"Ordrer/{year}/{month}/{order_number}"
         uploaded: list[str] = []
 
         # Determine filename suffix based on document type
