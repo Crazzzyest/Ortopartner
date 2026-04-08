@@ -331,7 +331,7 @@ def cmd_track_all() -> None:
     results = tracker.sync_all_open()
 
     if not results:
-        print("\n  Ingen apne leveranser med trackingnummer funnet.")
+        print("\n  Ingen åpne leveranser med trackingnummer funnet.")
         return
 
     from .alerting import AlertService
@@ -402,7 +402,7 @@ def cmd_dead_letters() -> None:
         print(f"    Steg: {e['stage']} | Feil: {e['error']}")
         if e.get("order_number"):
             print(f"    Ordre: {e['order_number']}")
-        print(f"    Re-kjor: python -m src --replay downloads/{e['source_file']}")
+        print(f"    Re-kjør: python -m src --replay downloads/{e['source_file']}")
         print()
 
 
@@ -540,9 +540,9 @@ def main():
         print()
         print("  python -m src --set-tracking <SO> <trackingnr>   # Sett DHL trackingnr")
         print("  python -m src --track <SO>                       # Spor en leveranse")
-        print("  python -m src --track-all                        # Spor alle apne")
+        print("  python -m src --track-all                        # Spor alle åpne")
         print()
-        print("  python -m src --replay <pdf-fil>                 # Re-kjor en PDF mot Odoo")
+        print("  python -m src --replay <pdf-fil>                 # Re-kjør en PDF mot Odoo")
         print("  python -m src --dead-letters                     # Vis feilede ordrer")
         print("  python -m src --events <ordrenr|cid>             # Vis hendelseslogg")
         print("  python -m src --rollback <SO-navn>               # Kanseller en SO i Odoo")

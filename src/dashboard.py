@@ -83,7 +83,7 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
             <td>{dl['stage']}</td>
             <td class="err">{dl['error'][:80]}</td>
             <td><form method="post" action="/api/replay/{dl['source_file']}">
-                <button type="submit" class="btn btn-sm">Re-kjor</button>
+                <button type="submit" class="btn btn-sm">Re-kjør</button>
             </form></td>
         </tr>"""
 
@@ -164,7 +164,7 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
 </div>
 
 <div class="actions">
-    <form method="post" action="/api/poll"><button type="submit" class="btn">Sjekk e-post na</button></form>
+    <form method="post" action="/api/poll"><button type="submit" class="btn">Sjekk e-post nå</button></form>
 </div>
 
 {"" if not dead_letters else f'''<section>
@@ -177,7 +177,7 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
 
 <section>
 <h2>Siste hendelser</h2>
-{"<p class='empty'>Ingen hendelser enna.</p>" if not events else f'''<table>
+{"<p class='empty'>Ingen hendelser ennå.</p>" if not events else f'''<table>
 <tr><th>Tid</th><th>CID</th><th>Hendelse</th><th>Status</th><th>Ordre</th><th>Detaljer</th></tr>
 {event_rows}
 </table>'''}

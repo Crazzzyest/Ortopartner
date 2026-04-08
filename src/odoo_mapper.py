@@ -130,7 +130,7 @@ class OdooMapper:
 
             # Fall back to first result if can't disambiguate
             logger.info(
-                "Partner ilike-match (flere treff, bruker forste): '%s' -> '%s'",
+                "Partner ilike-match (flere treff, bruker første): '%s' -> '%s'",
                 name, results[0]["name"],
             )
             return results[0]["id"]

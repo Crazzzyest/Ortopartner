@@ -51,7 +51,7 @@ class DhlTracker:
 
         result.tracking_number = tracking_number
         result.status = "success"
-        result.message = f"Trackingnummer {tracking_number} satt pa picking {picking_id}"
+        result.message = f"Trackingnummer {tracking_number} satt på picking {picking_id}"
         logger.info(result.message)
         return result
 
@@ -157,7 +157,7 @@ class DhlTracker:
         )
 
         if not pickings:
-            logger.info("Ingen apne leveranser med trackingnummer funnet")
+            logger.info("Ingen åpne leveranser med trackingnummer funnet")
             return []
 
         results = []

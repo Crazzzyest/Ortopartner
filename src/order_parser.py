@@ -61,10 +61,10 @@ CONFIG_SHEET_PROMPT = """\
 Du er en AI-agent som parser konfigurasjonsark (Configuration Sheet / Konfigurationsblatt)
 for ortopediske hjelpemidler, sendt til Ortopartner AS.
 
-Disse dokumentene er bildebaserte skjemaer med avkrysningsbokser, maleskjemaer og produktvalg.
-De inneholder IKKE ordrelinjer med priser/artikkelnummer slik vanlige bestillinger gjor.
+Disse dokumentene er bildebaserte skjemaer med avkrysningsbokser, måleskjemaer og produktvalg.
+De inneholder IKKE ordrelinjer med priser/artikkelnummer slik vanlige bestillinger gjør.
 
-## Felter a ekstrahere
+## Felter å ekstrahere
 
 - **order_number**: Commission no / Patient ID / Referanse (f.eks. "JFNO2601952")
 - **order_date**: Dato hvis oppgitt (ISO YYYY-MM-DD), ellers null
@@ -72,28 +72,28 @@ De inneholder IKKE ordrelinjer med priser/artikkelnummer slik vanlige bestilling
 - **customer_reference**: Pasient-ID, kontaktperson, eller referansenavn
 - **line_items**: Lag EN ordrelinje som beskriver produktet:
   - article_number: null (konfigurasjonsark har ikke artikkelnummer)
-  - description: Fullt produktnavn med alle valgte opsjoner (f.eks. "Evomotion Solokit, hoyre ben, dame, sort, kontinuerlig forsyning")
+  - description: Fullt produktnavn med alle valgte opsjoner (f.eks. "Evomotion Solokit, høyre ben, dame, sort, kontinuerlig forsyning")
   - quantity: 1
   - unit: "stk"
 - **delivery_address**: Leveringsadresse hvis oppgitt, ellers null
-- **special_instructions**: VIKTIG — her skal ALL maledata og konfigurasjonsdetaljer inn:
-  - Alle kroppsmal med verdier (midje, hofte, lar, kne, lengder, kroppshøyde osv.)
-  - Valgte opsjoner (kontrollenhet, lommetype, glidelaas, kabelutgang osv.)
-  - Eventuelle handskrevne notater eller merknader
+- **special_instructions**: VIKTIG — her skal ALL måledata og konfigurasjonsdetaljer inn:
+  - Alle kroppsmål med verdier (midje, hofte, lår, kne, lengder, kroppshøyde osv.)
+  - Valgte opsjoner (kontrollenhet, lommetype, glidelås, kabelutgang osv.)
+  - Eventuelle håndskrevne notater eller merknader
   - Elektrodeposisjon-info
   Formater som lesbar tekst, f.eks.:
-  "Produktvalg: Evomotion Solokit, hoyre ben, dame, sort. Mal: Midje 70.5cm, Hofte 94.0cm, Lar 54.0cm (V+H), Kne 35.0cm (V: 34.3, H: 35.0), Knelengde 60.0cm, Setelengde 22.0cm, Kroppshyde 178.0cm. Kontinuerlig forsyning."
+  "Produktvalg: Evomotion Solokit, høyre ben, dame, sort. Mål: Midje 70.5cm, Hofte 94.0cm, Lår 54.0cm (V+H), Kne 35.0cm (V: 34.3, H: 35.0), Knelengde 60.0cm, Setelengde 22.0cm, Kroppshøyde 178.0cm. Kontinuerlig forsyning."
 - **document_type**: Alltid "configuration_sheet"
-- **confidence**: 0.0-1.0 — sett hoyere verdi (0.7-0.9) hvis du klarer a lese maledata og produktvalg tydelig fra bildet
-- **warnings**: Advarsler (f.eks. "Handskrift vanskelig a lese", "Mal mangler for venstre ben")
+- **confidence**: 0.0-1.0 — sett høyere verdi (0.7-0.9) hvis du klarer å lese måledata og produktvalg tydelig fra bildet
+- **warnings**: Advarsler (f.eks. "Håndskrift vanskelig å lese", "Mål mangler for venstre ben")
 
 ## Viktige regler
 
-1. Bruk ALLTID bildet/bildene som primaerkilde — tekst-ekstraksjonen er ofte ufullstendig for disse skjemaene.
+1. Bruk ALLTID bildet/bildene som primærkilde — tekst-ekstraksjonen er ofte ufullstendig for disse skjemaene.
 2. Se nøye etter avkrysninger (X eller fylte sirkler) for produktvalg.
-3. Mal star ofte i bokser til hoyre for illustrasjoner — les tallene nøye.
-4. Hvis venstre/hoyre har ulike mal, noter begge.
-5. customer_name er ALDRI "Ortopartner AS" eller "Evomotion" — det er leverandor/produsent.
+3. Mål står ofte i bokser til høyre for illustrasjoner — les tallene nøye.
+4. Hvis venstre/høyre har ulike mål, noter begge.
+5. customer_name er ALDRI "Ortopartner AS" eller "Evomotion" — det er leverandør/produsent.
 
 Returner KUN gyldig JSON, ingen annen tekst.
 """

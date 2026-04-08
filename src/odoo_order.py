@@ -137,7 +137,7 @@ class OdooOrderService:
             try:
                 self._client.write("sale.order", so_id, {"tag_ids": [(4, tag_id)]})
             except Exception as e:
-                logger.warning("Kunne ikke sette REVIEW-tag pa SO %d: %s", so_id, e)
+                logger.warning("Kunne ikke sette REVIEW-tag på SO %d: %s", so_id, e)
 
         # Post review message on the SO with details
         reasons = []
@@ -151,7 +151,7 @@ class OdooOrderService:
         body += f"Konfidensverdi: {order.confidence:.0%}\n"
         if reasons:
             body += "\n".join(f"- {r}" for r in reasons) + "\n"
-        body += "\nGjennomga ordrelinjene og bekreft manuelt nar alt ser riktig ut."
+        body += "\nGjennomgå ordrelinjene og bekreft manuelt når alt ser riktig ut."
 
         try:
             self._client.call("sale.order", "message_post", [[so_id]], {
@@ -160,7 +160,7 @@ class OdooOrderService:
                 "subtype_xmlid": "mail.mt_note",
             })
         except Exception as e:
-            logger.warning("Kunne ikke poste review-melding pa SO %d: %s", so_id, e)
+            logger.warning("Kunne ikke poste review-melding på SO %d: %s", so_id, e)
 
     def _post_warnings(self, so_id: int, warnings: list[str]) -> None:
         """Post all warnings as a single message on the SO."""
@@ -174,7 +174,7 @@ class OdooOrderService:
                 "subtype_xmlid": "mail.mt_note",
             })
         except Exception as e:
-            logger.warning("Kunne ikke poste advarsler pa SO %d: %s", so_id, e)
+            logger.warning("Kunne ikke poste advarsler på SO %d: %s", so_id, e)
 
     def _find_or_create_tag(self, tag_name: str) -> int | None:
         """Find or create a crm.tag for sale orders."""
@@ -237,7 +237,7 @@ class OdooOrderService:
             if self._fallback_product_id:
                 warnings.append(
                     f"Linje {line_num}: Produkt '{item.article_number}' finnes ikke i Odoo "
-                    f"— bruker fallback-produkt. Korriger manuelt for riktig leverandor/innkjop."
+                    f"— bruker fallback-produkt. Korriger manuelt for riktig leverandør/innkjøp."
                 )
             else:
                 warnings.append(
