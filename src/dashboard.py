@@ -36,7 +36,7 @@ def _recent_events(n: int = 50) -> list[dict]:
 
 def _order_stats() -> dict:
     """Compute stats from event log."""
-    events = list_events(last_n=500)
+    events = list_events(last_n=1000)
     total = 0
     success = 0
     skipped = 0
@@ -44,7 +44,7 @@ def _order_stats() -> dict:
     review = 0
 
     for e in events:
-        if e["event"] in ("completed", "replay_completed"):
+        if e["event"] == "odoo_push":
             total += 1
             if e["status"] == "success":
                 success += 1
@@ -52,10 +52,12 @@ def _order_stats() -> dict:
                 skipped += 1
             elif e["status"] == "error":
                 errors += 1
-        if e["event"] == "odoo_push":
             details = e.get("details", {})
             if details.get("warnings"):
                 review += 1
+        if e["event"] == "failed":
+            total += 1
+            errors += 1
 
     return {
         "total": total,
