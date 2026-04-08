@@ -1,0 +1,281 @@
+"""High-level orchestration: ParsedOrder → Sale Order → Confirm → Purchase Order."""
+
+from __future__ import annotations
+
+import logging
+
+from .models import LineItem, OdooResult, ParsedOrder
+from .odoo_client import OdooClient
+from .odoo_mapper import OdooMapper
+
+logger = logging.getLogger(__name__)
+
+
+class OdooOrderService:
+    """Orchestrates the full Odoo order flow: SO → Confirm → PO."""
+
+    def __init__(
+        self,
+        client: OdooClient,
+        mapper: OdooMapper,
+        fallback_product_id: int | None = None,
+    ):
+        self._client = client
+        self._mapper = mapper
+        self._fallback_product_id = fallback_product_id
+
+    def push_order(self, order: ParsedOrder, needs_review: bool = False) -> OdooResult:
+        """Full pipeline: create SO, confirm, find POs.
+
+        If needs_review is True, the SO is created as a draft Quotation
+        (no confirmation) so a human can review and confirm it in Odoo.
+
+        Returns OdooResult with IDs and status.
+        """
+        result = OdooResult(
+            source_file=order.source_file,
+            order_number=order.order_number,
+        )
+
+        try:
+            # 1. Duplicate check
+            existing = self._find_existing_so(order.order_number)
+            if existing:
+                result.status = "skipped"
+                result.message = (
+                    f"Duplikat: SO med client_order_ref='{order.order_number}' "
+                    f"finnes allerede (id={existing})"
+                )
+                logger.info(result.message)
+                return result
+
+            # 2. Resolve partner
+            partner_id, partner_created = self._mapper.find_or_create_partner(order)
+            result.partner_id = partner_id
+            if partner_created:
+                result.warnings.append(
+                    f"Ny kunde opprettet i Odoo: '{order.customer_name or 'Ukjent kunde'}' "
+                    f"(id={partner_id}). Sjekk at dette ikke er en duplikat, og legg til "
+                    f"betalingsbetingelser/prisliste manuelt."
+                )
+
+            # 3. Create SO with line items
+            so_id, warnings = self._create_sale_order(order, partner_id)
+            result.sale_order_id = so_id
+            result.warnings.extend(warnings)
+
+            # Read back the SO name (e.g. "S00042")
+            so_data = self._client.search_read(
+                "sale.order", [["id", "=", so_id]], ["name"], limit=1
+            )
+            if so_data:
+                result.so_name = so_data[0]["name"]
+
+            logger.info("SO opprettet: %s (id=%d)", result.so_name, so_id)
+
+            # 4. Tag configuration sheets
+            if order.document_type == "configuration_sheet":
+                self._tag_config_sheet(so_id, order)
+
+            # 5. If flagged for review, tag and post review message
+            if needs_review:
+                self._tag_for_review(so_id, order)
+
+            # 6. Post warnings to SO message log
+            if result.warnings:
+                self._post_warnings(so_id, result.warnings)
+
+            # All orders stay as draft Quotations — confirmation is done
+            # manually in Odoo by the user after review.
+
+            result.status = "success"
+            if needs_review:
+                result.message = (
+                    f"Tilbud {result.so_name or so_id} opprettet som utkast "
+                    f"(krever manuell kontroll, konfidensverdi: {order.confidence:.0%})"
+                )
+            else:
+                result.message = (
+                    f"Tilbud {result.so_name or so_id} opprettet som utkast"
+                )
+
+        except Exception as e:
+            logger.exception("Feil ved Odoo-push for %s", order.order_number)
+            result.status = "error"
+            result.message = str(e)
+
+        return result
+
+    def _tag_config_sheet(self, so_id: int, order: ParsedOrder) -> None:
+        """Tag a draft SO as a configuration sheet with measurements in the note."""
+        tag_id = self._find_or_create_tag("KONFIGURASJONSARK")
+        if tag_id:
+            try:
+                self._client.write("sale.order", so_id, {"tag_ids": [(4, tag_id)]})
+            except Exception as e:
+                logger.warning("Kunne ikke sette KONFIGURASJONSARK-tag: %s", e)
+
+        # Post config details as a message
+        body = f"[KONFIGURASJONSARK] {order.order_number}\n"
+        if order.special_instructions:
+            body += f"\n{order.special_instructions}"
+
+        try:
+            self._client.call("sale.order", "message_post", [[so_id]], {
+                "body": body,
+                "message_type": "comment",
+                "subtype_xmlid": "mail.mt_note",
+            })
+        except Exception as e:
+            logger.warning("Kunne ikke poste config-melding: %s", e)
+
+    def _tag_for_review(self, so_id: int, order: ParsedOrder) -> None:
+        """Tag a draft SO for manual review: apply tag + post warning message."""
+        # Find or create a "REVIEW" tag
+        tag_id = self._find_or_create_tag("REVIEW")
+        if tag_id:
+            try:
+                self._client.write("sale.order", so_id, {"tag_ids": [(4, tag_id)]})
+            except Exception as e:
+                logger.warning("Kunne ikke sette REVIEW-tag pa SO %d: %s", so_id, e)
+
+        # Post review message on the SO with details
+        reasons = []
+        if order.confidence < 0.8:
+            reasons.append(f"Lav konfidensverdi: {order.confidence:.0%}")
+        if order.warnings:
+            for w in order.warnings:
+                reasons.append(w)
+
+        body = f"[REVIEW] Automatisk importert ordre krever manuell kontroll\n"
+        body += f"Konfidensverdi: {order.confidence:.0%}\n"
+        if reasons:
+            body += "\n".join(f"- {r}" for r in reasons) + "\n"
+        body += "\nGjennomga ordrelinjene og bekreft manuelt nar alt ser riktig ut."
+
+        try:
+            self._client.call("sale.order", "message_post", [[so_id]], {
+                "body": body,
+                "message_type": "comment",
+                "subtype_xmlid": "mail.mt_note",
+            })
+        except Exception as e:
+            logger.warning("Kunne ikke poste review-melding pa SO %d: %s", so_id, e)
+
+    def _post_warnings(self, so_id: int, warnings: list[str]) -> None:
+        """Post all warnings as a single message on the SO."""
+        body = "[ADVARSEL] Automatisk import fant avvik:\n\n"
+        body += "\n".join(f"- {w}" for w in warnings)
+
+        try:
+            self._client.call("sale.order", "message_post", [[so_id]], {
+                "body": body,
+                "message_type": "comment",
+                "subtype_xmlid": "mail.mt_note",
+            })
+        except Exception as e:
+            logger.warning("Kunne ikke poste advarsler pa SO %d: %s", so_id, e)
+
+    def _find_or_create_tag(self, tag_name: str) -> int | None:
+        """Find or create a crm.tag for sale orders."""
+        try:
+            results = self._client.search_read(
+                "crm.tag", [["name", "=", tag_name]], ["id"], limit=1
+            )
+            if results:
+                return results[0]["id"]
+            return self._client.create("crm.tag", {"name": tag_name})
+        except Exception as e:
+            logger.warning("Kunne ikke finne/opprette tag '%s': %s", tag_name, e)
+            return None
+
+    def _find_existing_so(self, order_number: str) -> int | None:
+        """Check if SO with this order_number already exists."""
+        results = self._client.search(
+            "sale.order",
+            [["client_order_ref", "=", order_number]],
+            limit=1,
+        )
+        return results[0] if results else None
+
+    def _create_sale_order(
+        self, order: ParsedOrder, partner_id: int
+    ) -> tuple[int, list[str]]:
+        """Create sale.order with order lines. Returns (SO id, warnings)."""
+        warnings: list[str] = []
+
+        order_lines = []
+        for i, item in enumerate(order.line_items):
+            line_vals, line_warnings = self._make_order_line(item, i + 1)
+            order_lines.append((0, 0, line_vals))
+            warnings.extend(line_warnings)
+
+        vals: dict = {
+            "partner_id": partner_id,
+            "client_order_ref": order.order_number,
+            "origin": f"PDF:{order.source_file}",
+            "order_line": order_lines,
+        }
+
+        if order.order_date:
+            vals["date_order"] = order.order_date
+
+        if order.special_instructions:
+            vals["note"] = order.special_instructions
+
+        so_id = self._client.create("sale.order", vals)
+        return so_id, warnings
+
+    def _make_order_line(
+        self, item: LineItem, line_num: int
+    ) -> tuple[dict, list[str]]:
+        """Build vals dict for a sale.order.line. Returns (vals, warnings)."""
+        warnings: list[str] = []
+
+        product_id = self._mapper.find_product(item.article_number)
+        if product_id is None and item.article_number:
+            if self._fallback_product_id:
+                warnings.append(
+                    f"Linje {line_num}: Produkt '{item.article_number}' finnes ikke i Odoo "
+                    f"— bruker fallback-produkt. Korriger manuelt for riktig leverandor/innkjop."
+                )
+            else:
+                warnings.append(
+                    f"Linje {line_num}: Produkt '{item.article_number}' finnes ikke i Odoo "
+                    f"og ingen fallback er satt. Linjen mangler produktkobling — "
+                    f"ingen innkjopsordre (PO) vil bli generert for denne linjen."
+                )
+            product_id = self._fallback_product_id
+        elif product_id is None and not item.article_number:
+            warnings.append(
+                f"Linje {line_num}: Ingen artikkelnummer oppgitt — "
+                f"linjen er ren fritekst uten produktkobling."
+            )
+
+        uom_id = self._mapper.find_uom(item.unit)
+
+        description = item.description or ""
+        if item.article_number:
+            description = f"[{item.article_number}] {description}"
+
+        vals: dict = {
+            "name": description,
+            "product_uom_qty": item.quantity,
+            "product_uom_id": uom_id,
+            "price_unit": item.unit_price or 0.0,
+        }
+
+        if product_id:
+            vals["product_id"] = product_id
+
+        if item.discount_percent:
+            vals["discount"] = item.discount_percent
+
+        return vals, warnings
+
+    def _find_purchase_orders(self, so_name: str) -> list[int]:
+        """Find POs generated by procurement after SO confirmation."""
+        return self._client.search(
+            "purchase.order",
+            [["origin", "ilike", so_name]],
+        )

@@ -1,0 +1,9 @@
+__pycache__
+*.pyc
+.env
+testeposter/
+output/
+downloads/
+*.pdf
+.git
+.claude

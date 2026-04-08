@@ -1,0 +1,10 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+output/
+downloads/
+testeposter/
+dhl-last-response.json
+dhl-last-success.txt
+.claude/
