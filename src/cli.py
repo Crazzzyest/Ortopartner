@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -13,6 +14,22 @@ from .order_parser import parse_order_pdf
 from .validator import needs_manual_review, validate_order
 
 logger = logging.getLogger(__name__)
+
+
+def _apply_test_mode_prefix(order: ParsedOrder) -> ParsedOrder:
+    """If test mode is active, prefix order_number with TEST- (idempotent)."""
+    from .config import is_test_mode, get_test_prefix
+
+    if not is_test_mode():
+        return order
+
+    prefix = get_test_prefix()
+    if order.order_number and not order.order_number.startswith(prefix):
+        original = order.order_number
+        order.order_number = f"{prefix}{original}"
+        logger.info("TEST-MODUS: ordrenr '%s' -> '%s'", original, order.order_number)
+
+    return order
 
 
 def _init_odoo_service():
@@ -83,8 +100,11 @@ def process_single(
     odoo_service=None,
 ) -> ParsedOrder:
     """Process a single PDF and optionally push to Odoo."""
+    from .event_log import log_event, new_correlation_id
+
     path = Path(pdf_path)
     total_steps = 3 if push_to_odoo else 2
+    cid = new_correlation_id()
 
     print(f"\n{'='*60}")
     print(f"  Prosesserer: {path.name}")
@@ -96,6 +116,13 @@ def process_single(
     print(f"  [1/{total_steps}] Parser PDF med AI...", end=" ", flush=True)
     order = parse_order_pdf(path)
     print(f"OK ({time.time() - start:.1f}s)")
+
+    # Apply TEST- prefix if test mode is active
+    order = _apply_test_mode_prefix(order)
+
+    log_event(cid, "pdf_parsed", order_number=order.order_number,
+               source_file=path.name, status="ok",
+               details={"confidence": order.confidence})
 
     # Step 2: Validate
     print(f"  [2/{total_steps}] Validerer...", end=" ", flush=True)
@@ -121,6 +148,20 @@ def process_single(
     odoo_result = None
     if push_to_odoo and odoo_service:
         odoo_result = _push_to_odoo(order, odoo_service)
+        if odoo_result:
+            log_event(cid, "odoo_push", order_number=order.order_number,
+                       source_file=path.name, status=odoo_result.status,
+                       details={
+                           "so_name": odoo_result.so_name,
+                           "customer": order.customer_name,
+                           "confidence": order.confidence,
+                           "review": review,
+                           "line_count": len(order.line_items),
+                           "total_amount": order.total_amount,
+                           "currency": order.currency,
+                           "warnings": odoo_result.warnings,
+                           "message": odoo_result.message,
+                       })
 
     # Step 4: Alerting
     from .alerting import AlertService
@@ -359,6 +400,7 @@ def cmd_replay(pdf_path: str) -> None:
 
     try:
         order = parse_order_pdf(pdf_path)
+        order = _apply_test_mode_prefix(order)
         validate_order(order)
         review = needs_manual_review(order)
 
@@ -546,7 +588,25 @@ def main():
         print("  python -m src --dead-letters                     # Vis feilede ordrer")
         print("  python -m src --events <ordrenr|cid>             # Vis hendelseslogg")
         print("  python -m src --rollback <SO-navn>               # Kanseller en SO i Odoo")
+        print()
+        print("Flagg:")
+        print("  --push                                           # Push resultater til Odoo")
+        print("  --test-mode                                      # Prefiks ordrenr med TEST- (unngår duplikater)")
         sys.exit(1)
+
+    # --- Global flags ---
+    # --test-mode: prefix all order numbers with TEST- so they don't
+    # collide with historical Ortopartner data in staging Odoo.
+    if "--test-mode" in args:
+        os.environ["TEST_MODE"] = "1"
+        args = [a for a in args if a != "--test-mode"]
+
+    # Load config once and print banner if test mode is active
+    from .config import is_test_mode, get_test_prefix
+    if is_test_mode():
+        print("=" * 60)
+        print(f"  TEST-MODUS AKTIV — ordrenr prefikses med '{get_test_prefix()}'")
+        print("=" * 60)
 
     # --- Ops commands ---
     if args[0] == "--replay":

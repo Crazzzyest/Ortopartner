@@ -86,12 +86,27 @@ class OdooClient:
         return self._execute(model, "search", [domain], kwargs)
 
     def search_read(
-        self, model: str, domain: list, fields: list[str], limit: int = 0
+        self,
+        model: str,
+        domain: list,
+        fields: list[str],
+        limit: int = 0,
+        order: str | None = None,
     ) -> list[dict]:
-        """Search and read records in one call."""
+        """Search and read records in one call.
+
+        Args:
+            model: Odoo model name (e.g. 'sale.order.line').
+            domain: Search domain as list of triples.
+            fields: Fields to return.
+            limit: Max records (0 = no limit).
+            order: Sort order (e.g. 'id asc', 'sequence, id').
+        """
         kwargs: dict[str, Any] = {"fields": fields}
         if limit:
             kwargs["limit"] = limit
+        if order:
+            kwargs["order"] = order
         return self._execute(model, "search_read", [domain], kwargs)
 
     def read(self, model: str, ids: list[int], fields: list[str]) -> list[dict]:

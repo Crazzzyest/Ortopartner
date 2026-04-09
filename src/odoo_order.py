@@ -37,6 +37,11 @@ class OdooOrderService:
             order_number=order.order_number,
         )
 
+        # Carry over parsing/validation warnings (derived unit prices,
+        # missing fields, etc.) so they're posted to both the Odoo
+        # message log and the event log alongside Odoo-level warnings.
+        result.warnings.extend(order.warnings)
+
         try:
             # 1. Duplicate check
             existing = self._find_existing_so(order.order_number)
@@ -224,7 +229,104 @@ class OdooOrderService:
             vals["note"] = order.special_instructions
 
         so_id = self._client.create("sale.order", vals)
+
+        # After create, Odoo may have applied partner/pricelist defaults
+        # (contract discounts, pricelist unit prices) via onchange. Compare
+        # what the PDF said vs what Odoo actually saved, and warn on any
+        # divergence so Marius can dobbeltsjekke før bekreftelse.
+        divergence_warnings = self._check_line_divergence(so_id, order.line_items)
+        warnings.extend(divergence_warnings)
+
         return so_id, warnings
+
+    def _check_line_divergence(
+        self, so_id: int, items: list[LineItem]
+    ) -> list[str]:
+        """Compare PDF values vs Odoo-applied values for price_unit and discount.
+
+        Divergences typically come from Odoo's onchange logic applying
+        partner-level contract discounts or pricelist rules that aren't
+        mentioned in the customer's PDF. We surface these as warnings
+        (not errors) — the values are most likely correct for production,
+        but a human should confirm before releasing the order.
+        """
+        warnings: list[str] = []
+
+        try:
+            lines = self._client.search_read(
+                "sale.order.line",
+                [["order_id", "=", so_id]],
+                ["id", "sequence", "name", "price_unit", "discount", "product_uom_qty"],
+                order="sequence, id",
+            )
+        except Exception as e:
+            logger.warning("Kunne ikke lese tilbake SO-linjer for %d: %s", so_id, e)
+            return warnings
+
+        # Filter out section/note lines that Odoo adds automatically.
+        lines = [ln for ln in lines if ln.get("product_uom_qty") is not None]
+
+        if len(lines) != len(items):
+            logger.warning(
+                "Antall SO-linjer fra Odoo (%d) matcher ikke PDF-linjer (%d) "
+                "for SO id=%d — hopper over divergens-sjekk",
+                len(lines), len(items), so_id,
+            )
+            return warnings
+
+        TOL = 0.01  # NOK/percent tolerance for float comparisons
+
+        for idx, (item, line) in enumerate(zip(items, lines), start=1):
+            pdf_price = float(item.unit_price or 0.0)
+            pdf_discount = float(item.discount_percent or 0.0)
+            odoo_price = float(line.get("price_unit") or 0.0)
+            odoo_discount = float(line.get("discount") or 0.0)
+
+            label = f"Linje {idx}"
+            if item.article_number:
+                label = f"Linje {idx} ({item.article_number})"
+
+            # --- Unit price divergence ---
+            if pdf_price > TOL and abs(pdf_price - odoo_price) > TOL:
+                warnings.append(
+                    f"{label}: enhetspris-avvik — PDF sier {pdf_price:.2f} NOK, "
+                    f"Odoo anvendte {odoo_price:.2f} NOK (fra prislisten). "
+                    f"Dobbeltsjekk før bekreftelse."
+                )
+            elif pdf_price <= TOL and odoo_price > TOL:
+                warnings.append(
+                    f"{label}: PDF hadde ingen enhetspris — Odoo fylte inn "
+                    f"{odoo_price:.2f} NOK fra prislisten. Verifiser at dette stemmer."
+                )
+            elif pdf_price > TOL and odoo_price <= TOL:
+                warnings.append(
+                    f"{label}: PDF sier {pdf_price:.2f} NOK, men Odoo satte "
+                    f"enhetspris til 0. Mangler produktkobling/prisliste — "
+                    f"fyll inn pris manuelt."
+                )
+
+            # --- Discount divergence ---
+            if abs(pdf_discount - odoo_discount) > TOL:
+                if pdf_discount <= TOL and odoo_discount > TOL:
+                    warnings.append(
+                        f"{label}: PDF hadde ingen rabatt — Odoo anvendte "
+                        f"{odoo_discount:.1f}% (kontraktsrabatt fra kundens "
+                        f"prisliste). Bekreft at dette er avtalt."
+                    )
+                elif pdf_discount > TOL and odoo_discount <= TOL:
+                    warnings.append(
+                        f"{label}: PDF sier {pdf_discount:.1f}% rabatt, men "
+                        f"Odoo anvendte ingen. Legg til manuelt eller sjekk "
+                        f"kundens prisliste."
+                    )
+                else:
+                    warnings.append(
+                        f"{label}: rabatt-avvik — PDF sier {pdf_discount:.1f}%, "
+                        f"Odoo anvendte {odoo_discount:.1f}%. Dobbeltsjekk før "
+                        f"bekreftelse."
+                    )
+
+        return warnings
 
     def _make_order_line(
         self, item: LineItem, line_num: int

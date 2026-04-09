@@ -153,6 +153,21 @@ class EmailMonitor:
 
             # 2. Parse PDF
             order = parse_order_pdf(pdf_path)
+
+            # Apply TEST- prefix if test mode is active (before duplicate check,
+            # Odoo push and SharePoint archive — so everything downstream sees
+            # the prefixed number and test runs don't collide with historical data).
+            from .config import is_test_mode, get_test_prefix
+            if is_test_mode():
+                prefix = get_test_prefix()
+                original_number = order.order_number
+                if original_number and not original_number.startswith(prefix):
+                    order.order_number = f"{prefix}{original_number}"
+                    logger.info(
+                        "TEST-MODUS: ordrenr '%s' -> '%s'",
+                        original_number, order.order_number,
+                    )
+
             result["order_number"] = order.order_number
             log_event(cid, "pdf_parsed", order_number=order.order_number,
                        source_file=filename, status="ok",
@@ -173,8 +188,17 @@ class EmailMonitor:
                 result["message"] = odoo_result.message
                 log_event(cid, "odoo_push", order_number=order.order_number,
                            status=odoo_result.status,
-                           details={"so_name": odoo_result.so_name,
-                                    "warnings": odoo_result.warnings})
+                           details={
+                               "so_name": odoo_result.so_name,
+                               "customer": order.customer_name,
+                               "confidence": order.confidence,
+                               "review": review,
+                               "line_count": len(order.line_items),
+                               "total_amount": order.total_amount,
+                               "currency": order.currency,
+                               "warnings": odoo_result.warnings,
+                               "message": odoo_result.message,
+                           })
             else:
                 result["status"] = "parsed"
                 result["message"] = (

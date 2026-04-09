@@ -53,7 +53,7 @@ def _order_stats() -> dict:
             elif e["status"] == "error":
                 errors += 1
             details = e.get("details", {})
-            if details.get("warnings"):
+            if details.get("review"):
                 review += 1
         if e["event"] == "failed":
             total += 1
@@ -70,11 +70,249 @@ def _order_stats() -> dict:
     }
 
 
+# --- Warning classification helpers ---
+
+def _classify_warning(msg: str) -> str:
+    """Return a CSS class / severity tag for a warning message."""
+    lower = msg.lower()
+    if "enhetspris utledet" in lower:
+        return "info"
+    if "enhetspris-avvik" in lower or "rabatt-avvik" in lower:
+        return "warn"
+    if "kontraktsrabatt" in lower or "fylte inn" in lower:
+        return "warn"
+    if "ny kunde opprettet" in lower:
+        return "warn"
+    if "finnes ikke i odoo" in lower:
+        return "warn"
+    if "mangler" in lower:
+        return "warn"
+    return "info"
+
+
+def _aggregate_orders(events: list[dict]) -> list[dict]:
+    """Group events by order_number and build a summary per order.
+
+    Returns a list of order-state dicts (most recent first) with:
+      order_number, customer, status, so_name, confidence, review,
+      warnings, total, line_count, last_ts, cid, events.
+    """
+    by_order: dict[str, dict] = {}
+
+    for ev in events:
+        order_num = ev.get("order")
+        if not order_num:
+            continue
+
+        state = by_order.setdefault(order_num, {
+            "order_number": order_num,
+            "customer": None,
+            "status": None,
+            "so_name": None,
+            "confidence": None,
+            "review": False,
+            "warnings": [],
+            "total_amount": None,
+            "currency": "NOK",
+            "line_count": None,
+            "message": None,
+            "last_ts": ev["ts"],
+            "cid": ev["cid"],
+            "archived": False,
+            "events": [],
+        })
+
+        state["events"].append(ev)
+        if ev["ts"] >= state["last_ts"]:
+            state["last_ts"] = ev["ts"]
+            state["cid"] = ev["cid"]
+
+        details = ev.get("details") or {}
+
+        if ev["event"] == "pdf_parsed":
+            if "confidence" in details and state["confidence"] is None:
+                state["confidence"] = details["confidence"]
+
+        if ev["event"] == "odoo_push":
+            state["status"] = ev["status"]
+            if details.get("so_name"):
+                state["so_name"] = details["so_name"]
+            if details.get("customer"):
+                state["customer"] = details["customer"]
+            if "confidence" in details:
+                state["confidence"] = details["confidence"]
+            if "review" in details:
+                state["review"] = bool(details["review"])
+            if "line_count" in details:
+                state["line_count"] = details["line_count"]
+            if "total_amount" in details:
+                state["total_amount"] = details["total_amount"]
+            if "currency" in details:
+                state["currency"] = details["currency"] or "NOK"
+            if details.get("warnings"):
+                state["warnings"] = list(details["warnings"])
+            if details.get("message"):
+                state["message"] = details["message"]
+
+        if ev["event"] == "sharepoint_archived":
+            state["archived"] = True
+
+        if ev["event"] == "failed":
+            state["status"] = "error"
+            if details.get("error"):
+                state["message"] = details["error"]
+
+    orders = list(by_order.values())
+    orders.sort(key=lambda o: o["last_ts"], reverse=True)
+    return orders
+
+
 # ---------------------------------------------------------------------------
 # HTML template (inline to keep it simple)
 # ---------------------------------------------------------------------------
 
+def _format_amount(amount, currency: str = "NOK") -> str:
+    if amount is None:
+        return "-"
+    try:
+        val = float(amount)
+    except (TypeError, ValueError):
+        return str(amount)
+    formatted = f"{val:,.2f}".replace(",", " ").replace(".", ",")
+    return f"{formatted} {currency}"
+
+
+def _render_order_warnings_block(warnings: list[str]) -> str:
+    """Render warnings as a grouped, color-coded list (like Odoo message log)."""
+    if not warnings:
+        return '<div class="no-warnings">Ingen advarsler</div>'
+
+    info = [w for w in warnings if _classify_warning(w) == "info"]
+    warn = [w for w in warnings if _classify_warning(w) == "warn"]
+
+    parts = []
+    if warn:
+        parts.append('<div class="warning-group warn">')
+        parts.append('<div class="warning-group-title">Krever oppmerksomhet</div>')
+        parts.append('<ul>')
+        for w in warn:
+            parts.append(f'<li>{_escape(w)}</li>')
+        parts.append('</ul>')
+        parts.append('</div>')
+    if info:
+        parts.append('<div class="warning-group info">')
+        parts.append('<div class="warning-group-title">Informasjon</div>')
+        parts.append('<ul>')
+        for w in info:
+            parts.append(f'<li>{_escape(w)}</li>')
+        parts.append('</ul>')
+        parts.append('</div>')
+    return "".join(parts)
+
+
+def _escape(s: str) -> str:
+    """Minimal HTML escape."""
+    if s is None:
+        return ""
+    return (str(s)
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;"))
+
+
 def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict]) -> str:
+    from .config import is_test_mode, get_test_prefix
+    test_mode_banner = ""
+    if is_test_mode():
+        test_mode_banner = (
+            f'<div class="test-banner">TEST-MODUS AKTIV '
+            f'&mdash; ordrenr prefikses med <code>{get_test_prefix()}</code></div>'
+        )
+
+    # Aggregate events by order for the "Siste ordrer" section
+    orders = _aggregate_orders(events)[:25]
+
+    order_rows = ""
+    for o in orders:
+        status = o["status"] or "pending"
+        status_label = {
+            "success": "OK",
+            "skipped": "Duplikat",
+            "error": "Feil",
+            "pending": "Venter",
+        }.get(status, status)
+        status_class = {
+            "success": "badge-success",
+            "skipped": "badge-skipped",
+            "error": "badge-error",
+        }.get(status, "badge-pending")
+
+        review_badge = ""
+        if o["review"]:
+            review_badge = '<span class="badge badge-review">REVIEW</span>'
+
+        archived_badge = ""
+        if o["archived"]:
+            archived_badge = '<span class="badge badge-archived" title="Arkivert i SharePoint">SP</span>'
+
+        confidence = ""
+        if o["confidence"] is not None:
+            confidence = f'{o["confidence"]*100:.0f}%'
+
+        warn_count = len(o["warnings"])
+        warn_info_count = sum(1 for w in o["warnings"] if _classify_warning(w) == "info")
+        warn_attention_count = warn_count - warn_info_count
+        warn_summary = ""
+        if warn_attention_count:
+            warn_summary += f'<span class="warn-count warn">{warn_attention_count} advarsel</span> '
+        if warn_info_count:
+            warn_summary += f'<span class="warn-count info">{warn_info_count} info</span>'
+        if not warn_summary:
+            warn_summary = '<span class="warn-count none">—</span>'
+
+        warnings_block = _render_order_warnings_block(o["warnings"])
+
+        customer = _escape(o["customer"] or "-")
+        so = _escape(o["so_name"] or "-")
+        order_num = _escape(o["order_number"])
+        total = _format_amount(o["total_amount"], o["currency"] or "NOK")
+        line_count = o["line_count"] if o["line_count"] is not None else "-"
+        message = _escape(o["message"] or "")
+
+        order_rows += f'''
+        <details class="order-row">
+            <summary>
+                <span class="ordre-col">
+                    <code>{order_num}</code>
+                    <span class="badge {status_class}">{status_label}</span>
+                    {review_badge}
+                    {archived_badge}
+                </span>
+                <span class="customer-col">{customer}</span>
+                <span class="so-col">{so}</span>
+                <span class="conf-col">{confidence}</span>
+                <span class="lines-col">{line_count}</span>
+                <span class="total-col">{total}</span>
+                <span class="warn-col">{warn_summary}</span>
+                <span class="ts-col">{o["last_ts"][11:19]}</span>
+            </summary>
+            <div class="order-detail">
+                <div class="order-meta">
+                    <div><strong>Ordrenr:</strong> <code>{order_num}</code></div>
+                    <div><strong>Kunde:</strong> {customer}</div>
+                    <div><strong>SO:</strong> {so}</div>
+                    <div><strong>Konfidensverdi:</strong> {confidence or "-"}</div>
+                    <div><strong>Linjer:</strong> {line_count}</div>
+                    <div><strong>Totalbeløp:</strong> {total}</div>
+                    <div><strong>Sist oppdatert:</strong> {o["last_ts"]}</div>
+                    <div><strong>CID:</strong> <code>{o["cid"]}</code></div>
+                </div>
+                {"<div class='order-message'>" + message + "</div>" if message else ""}
+                {warnings_block}
+            </div>
+        </details>'''
+
     dl_rows = ""
     for dl in dead_letters:
         dl_rows += f"""<tr>
@@ -151,11 +389,145 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
     .err {{ color: #c1121f; }}
     .ok {{ color: #2d6a4f; }}
     .empty {{ color: #aaa; padding: 20px; text-align: center; }}
+    .test-banner {{ background: #ffe066; color: #1a1a2e; padding: 10px 16px;
+                    border-radius: 6px; margin-bottom: 16px; font-weight: 600;
+                    border-left: 4px solid #e09f3e; font-size: 14px; }}
+    .test-banner code {{ background: #1a1a2e; color: #ffe066; }}
+
+    /* --- Siste ordrer section --- */
+    .orders-header, .order-row summary {{
+        display: grid;
+        grid-template-columns: 2.4fr 2fr 1fr 0.7fr 0.5fr 1.3fr 1.3fr 0.8fr;
+        gap: 8px;
+        padding: 10px 12px;
+        align-items: center;
+        font-size: 13px;
+    }}
+    .orders-header {{
+        background: #f0f3f8;
+        color: #555;
+        font-weight: 600;
+        font-size: 11px;
+        text-transform: uppercase;
+        border-radius: 6px 6px 0 0;
+    }}
+    .order-row {{
+        background: #fff;
+        border-bottom: 1px solid #eef0f4;
+    }}
+    .order-row:last-child {{ border-bottom: none; }}
+    .order-row summary {{
+        cursor: pointer;
+        list-style: none;
+        transition: background 0.1s;
+    }}
+    .order-row summary::-webkit-details-marker {{ display: none; }}
+    .order-row summary:hover {{ background: #f8fafc; }}
+    .order-row[open] summary {{ background: #f1f5f9; }}
+
+    .ordre-col {{ display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }}
+    .customer-col {{ color: #334; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+    .so-col {{ font-family: monospace; color: #457b9d; }}
+    .conf-col, .lines-col {{ text-align: center; color: #666; }}
+    .total-col {{ text-align: right; font-variant-numeric: tabular-nums; color: #1a1a2e; font-weight: 600; }}
+    .warn-col {{ text-align: left; }}
+    .ts-col {{ text-align: right; color: #999; font-family: monospace; font-size: 11px; }}
+
+    .badge {{
+        display: inline-block;
+        padding: 2px 7px;
+        border-radius: 10px;
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+    }}
+    .badge-success {{ background: #d4edda; color: #155724; }}
+    .badge-skipped {{ background: #fff3cd; color: #856404; }}
+    .badge-error {{ background: #f8d7da; color: #721c24; }}
+    .badge-pending {{ background: #e2e3e5; color: #383d41; }}
+    .badge-review {{ background: #fce5cd; color: #9c4a00; }}
+    .badge-archived {{ background: #cfe2ff; color: #084298; }}
+
+    .warn-count {{
+        display: inline-block;
+        padding: 1px 6px;
+        border-radius: 8px;
+        font-size: 11px;
+        font-weight: 600;
+        margin-right: 3px;
+    }}
+    .warn-count.warn {{ background: #fce5cd; color: #9c4a00; }}
+    .warn-count.info {{ background: #e3f2fd; color: #0d47a1; }}
+    .warn-count.none {{ color: #bbb; }}
+
+    .order-detail {{
+        padding: 16px 20px;
+        background: #fafbfc;
+        border-top: 1px solid #e8eaf0;
+    }}
+    .order-meta {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 8px 16px;
+        margin-bottom: 12px;
+        font-size: 12px;
+        color: #555;
+    }}
+    .order-meta strong {{ color: #333; margin-right: 4px; }}
+    .order-message {{
+        background: #fff;
+        border-left: 3px solid #457b9d;
+        padding: 8px 12px;
+        margin-bottom: 12px;
+        font-size: 12px;
+        color: #444;
+        border-radius: 0 4px 4px 0;
+    }}
+
+    .warning-group {{
+        background: #fff;
+        border-radius: 5px;
+        padding: 10px 14px;
+        margin-bottom: 8px;
+        border-left: 4px solid #ccc;
+    }}
+    .warning-group.warn {{ border-left-color: #e09f3e; background: #fffbf2; }}
+    .warning-group.info {{ border-left-color: #457b9d; background: #f4f8fc; }}
+    .warning-group-title {{
+        font-weight: 700;
+        font-size: 11px;
+        text-transform: uppercase;
+        color: #666;
+        margin-bottom: 6px;
+        letter-spacing: 0.3px;
+    }}
+    .warning-group.warn .warning-group-title {{ color: #9c4a00; }}
+    .warning-group.info .warning-group-title {{ color: #0d47a1; }}
+    .warning-group ul {{
+        margin: 0;
+        padding-left: 18px;
+        font-size: 12px;
+        line-height: 1.6;
+    }}
+    .warning-group li {{ color: #444; }}
+    .no-warnings {{
+        color: #9aa;
+        font-size: 12px;
+        font-style: italic;
+        padding: 6px 0;
+    }}
+
+    .orders-section {{ padding: 0; }}
+    .orders-section h2 {{ padding: 16px 16px 12px; }}
+    .orders-empty {{ padding: 30px; text-align: center; color: #aaa; }}
 </style>
 </head>
 <body>
 <h1>Ortopartner Ordreflyt</h1>
 <p class="subtitle">Automatisk ordrebehandling: E-post &rarr; PDF &rarr; Odoo &rarr; SharePoint</p>
+
+{test_mode_banner}
 
 <div class="cards">
     <div class="card blue"><div class="num">{stats['emails_processed']}</div><div class="label">E-poster behandlet</div></div>
@@ -177,8 +549,25 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
 </table>
 </section>'''}
 
+<section class="orders-section">
+<h2>Siste ordrer <span style="font-size:11px; color:#888; font-weight:400;">(klikk for detaljer)</span></h2>
+{f'<div class="orders-empty">Ingen ordrer behandlet ennå.</div>' if not orders else f'''
+<div class="orders-header">
+    <span>Ordre / Status</span>
+    <span>Kunde</span>
+    <span>SO</span>
+    <span>Konfid.</span>
+    <span>Linjer</span>
+    <span style="text-align:right;">Totalbeløp</span>
+    <span>Advarsler</span>
+    <span style="text-align:right;">Tid</span>
+</div>
+{order_rows}
+'''}
+</section>
+
 <section>
-<h2>Siste hendelser</h2>
+<h2>Siste hendelser (råformat)</h2>
 {"<p class='empty'>Ingen hendelser ennå.</p>" if not events else f'''<table>
 <tr><th>Tid</th><th>CID</th><th>Hendelse</th><th>Status</th><th>Ordre</th><th>Detaljer</th></tr>
 {event_rows}

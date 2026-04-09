@@ -40,11 +40,18 @@ class AlertService:
                 msg += "\nAdvarsler: " + "; ".join(order.warnings)
             alerts.append(self._send_alert("LAV_KONFIDENSVERDI", msg, order, odoo_result))
 
-        # Alert 2: Many warnings (even if confidence is OK)
-        if len(order.warnings) >= 3:
+        # Alert 2: Many significant warnings (even if confidence is OK).
+        # Informational warnings (like derived unit prices) don't count —
+        # they're normal for Ortopartner PDFs that only show line totals.
+        from .validator import _INFO_WARNING_PREFIXES
+        significant = [
+            w for w in order.warnings
+            if not any(p.lower() in w.lower() for p in _INFO_WARNING_PREFIXES)
+        ]
+        if len(significant) >= 3:
             msg = (
-                f"Ordre {order.order_number} har {len(order.warnings)} advarsler: "
-                + "; ".join(order.warnings)
+                f"Ordre {order.order_number} har {len(significant)} advarsler: "
+                + "; ".join(significant)
             )
             alerts.append(self._send_alert("MANGE_ADVARSLER", msg, order, odoo_result))
 

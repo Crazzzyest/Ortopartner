@@ -50,3 +50,25 @@ def require_graph_config() -> dict[str, str]:
         )
 
     return cfg
+
+
+def is_test_mode() -> bool:
+    """Check if test mode is active.
+
+    Test mode prefixes order numbers with TEST- so re-runs of real PDFs
+    (from testeposter/) don't collide with historical Ortopartner data
+    in staging Odoo. Enable by setting TEST_MODE=1 in .env or via the
+    --test-mode CLI flag.
+    """
+    cfg = load_config()
+    return cfg.get("TEST_MODE", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def get_test_prefix() -> str:
+    """Get the prefix to apply to order numbers in test mode.
+
+    Defaults to 'TEST-'. Override via TEST_PREFIX in .env (e.g. 'TEST2-'
+    to start a fresh batch without hitting duplicate check on TEST- runs).
+    """
+    cfg = load_config()
+    return cfg.get("TEST_PREFIX", "TEST-") or "TEST-"
