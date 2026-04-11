@@ -77,6 +77,8 @@ def _classify_warning(msg: str) -> str:
     lower = msg.lower()
     if "enhetspris utledet" in lower:
         return "info"
+    if "enhetspris hentet fra produktkatalog" in lower:
+        return "info"
     if "enhetspris-avvik" in lower or "rabatt-avvik" in lower:
         return "warn"
     if "kontraktsrabatt" in lower or "fylte inn" in lower:
@@ -650,8 +652,12 @@ def _run_poll():
         client.authenticate()
         mapper = OdooMapper(client)
         fallback_id = ocfg.get("ODOO_FALLBACK_PRODUCT_ID")
-        odoo_service = OdooOrderService(client, mapper,
-                                         fallback_product_id=int(fallback_id) if fallback_id else None)
+        transport_id = ocfg.get("ODOO_TRANSPORT_PRODUCT_ID")
+        odoo_service = OdooOrderService(
+            client, mapper,
+            fallback_product_id=int(fallback_id) if fallback_id else None,
+            transport_product_id=int(transport_id) if transport_id else None,
+        )
 
         # SharePoint
         archiver = SharePointArchiver(graph)
@@ -694,8 +700,12 @@ def _run_replay(filename: str):
         client.authenticate()
         mapper = OdooMapper(client)
         fallback_id = ocfg.get("ODOO_FALLBACK_PRODUCT_ID")
-        service = OdooOrderService(client, mapper,
-                                    fallback_product_id=int(fallback_id) if fallback_id else None)
+        transport_id = ocfg.get("ODOO_TRANSPORT_PRODUCT_ID")
+        service = OdooOrderService(
+            client, mapper,
+            fallback_product_id=int(fallback_id) if fallback_id else None,
+            transport_product_id=int(transport_id) if transport_id else None,
+        )
 
         result = service.push_order(order, needs_review=review)
         log_event(cid, "replay_completed", order_number=order.order_number,

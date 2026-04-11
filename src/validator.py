@@ -9,6 +9,7 @@ from .models import ParsedOrder
 # These don't count toward the manual-review threshold.
 _INFO_WARNING_PREFIXES = (
     "Enhetspris utledet fra totalbeløp",
+    "Enhetspris hentet fra produktkatalog",
 )
 
 

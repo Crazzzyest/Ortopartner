@@ -19,10 +19,15 @@ class OdooOrderService:
         client: OdooClient,
         mapper: OdooMapper,
         fallback_product_id: int | None = None,
+        transport_product_id: int | None = None,
     ):
         self._client = client
         self._mapper = mapper
         self._fallback_product_id = fallback_product_id
+        # Dedicated fallback for transport/freight lines (e.g. F1 "Frakt").
+        # Kicks in when the line description looks like transport AND
+        # the article number isn't in the catalog.
+        self._transport_product_id = transport_product_id
 
     def push_order(self, order: ParsedOrder, needs_review: bool = False) -> OdooResult:
         """Full pipeline: create SO, confirm, find POs.
@@ -336,18 +341,27 @@ class OdooOrderService:
 
         product_id = self._mapper.find_product(item.article_number)
         if product_id is None and item.article_number:
-            if self._fallback_product_id:
+            # Is this line actually a transport/freight charge from the customer's ERP?
+            if self._looks_like_transport(item) and self._transport_product_id:
+                product_id = self._transport_product_id
+                warnings.append(
+                    f"Linje {line_num}: Produkt '{item.article_number}' "
+                    f"('{(item.description or '').strip()}') gjenkjent som frakt — "
+                    f"koblet til standard fraktprodukt i Odoo."
+                )
+            elif self._fallback_product_id:
                 warnings.append(
                     f"Linje {line_num}: Produkt '{item.article_number}' finnes ikke i Odoo "
                     f"— bruker fallback-produkt. Korriger manuelt for riktig leverandør/innkjøp."
                 )
+                product_id = self._fallback_product_id
             else:
                 warnings.append(
                     f"Linje {line_num}: Produkt '{item.article_number}' finnes ikke i Odoo "
                     f"og ingen fallback er satt. Linjen mangler produktkobling — "
                     f"ingen innkjopsordre (PO) vil bli generert for denne linjen."
                 )
-            product_id = self._fallback_product_id
+                product_id = self._fallback_product_id
         elif product_id is None and not item.article_number:
             warnings.append(
                 f"Linje {line_num}: Ingen artikkelnummer oppgitt — "
@@ -360,11 +374,28 @@ class OdooOrderService:
         if item.article_number:
             description = f"[{item.article_number}] {description}"
 
+        # Determine price_unit:
+        # 1. Use PDF price if set
+        # 2. Else fall back to product.list_price (Odoo catalog) if we have a product
+        # 3. Else 0.0 (flagged as warning elsewhere)
+        # NB: Odoo 19 doesn't fire onchange_product_id on XML-RPC create(),
+        #     so a missing price_unit stays as 0 unless we fill it ourselves.
+        resolved_price = item.unit_price
+        if (resolved_price is None or resolved_price <= 0) and product_id:
+            catalog_price = self._fetch_product_list_price(product_id)
+            if catalog_price and catalog_price > 0:
+                resolved_price = catalog_price
+                warnings.append(
+                    f"Linje {line_num}: Enhetspris hentet fra produktkatalog "
+                    f"(kr {catalog_price:.2f}) — PDF hadde ingen pris. "
+                    f"Verifiser mot kundens prisliste før bekreftelse."
+                )
+
         vals: dict = {
             "name": description,
             "product_uom_qty": item.quantity,
             "product_uom_id": uom_id,
-            "price_unit": item.unit_price or 0.0,
+            "price_unit": resolved_price or 0.0,
         }
 
         if product_id:
@@ -374,6 +405,33 @@ class OdooOrderService:
             vals["discount"] = item.discount_percent
 
         return vals, warnings
+
+    _TRANSPORT_KEYWORDS = (
+        "transport", "frakt", "shipping", "porto", "fraktkostnad",
+        "forsendelse", "leveringsgebyr", "freight",
+    )
+
+    def _looks_like_transport(self, item: LineItem) -> bool:
+        """Heuristic: does this line look like a freight/transport charge?"""
+        haystack = " ".join(
+            filter(None, [item.description or "", item.article_number or ""])
+        ).lower()
+        return any(kw in haystack for kw in self._TRANSPORT_KEYWORDS)
+
+    def _fetch_product_list_price(self, product_id: int) -> float | None:
+        """Read list_price from product.product for price-less lines."""
+        try:
+            rows = self._client.search_read(
+                "product.product",
+                [["id", "=", product_id]],
+                ["list_price"],
+                limit=1,
+            )
+            if rows:
+                return float(rows[0].get("list_price") or 0.0)
+        except Exception as exc:
+            logger.warning("Kunne ikke hente list_price for produkt %s: %s", product_id, exc)
+        return None
 
     def _find_purchase_orders(self, so_name: str) -> list[int]:
         """Find POs generated by procurement after SO confirmation."""

@@ -51,9 +51,13 @@ def _init_odoo_service():
     fallback_id = cfg.get("ODOO_FALLBACK_PRODUCT_ID")
     fallback_product_id = int(fallback_id) if fallback_id else None
 
+    transport_id = cfg.get("ODOO_TRANSPORT_PRODUCT_ID")
+    transport_product_id = int(transport_id) if transport_id else None
+
     service = OdooOrderService(
         client, mapper,
         fallback_product_id=fallback_product_id,
+        transport_product_id=transport_product_id,
     )
     return service
 
