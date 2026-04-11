@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 from pathlib import Path
 
@@ -169,6 +170,58 @@ def _aggregate_orders(events: list[dict]) -> list[dict]:
     return orders
 
 
+# Matches warnings emitted by OdooOrderService._make_order_line for unknown products.
+# Handles both the "finnes ikke i Odoo — bruker fallback..." and
+# "finnes ikke i Odoo og ingen fallback..." variants, but NOT the transport
+# heuristic warning (which contains "gjenkjent som frakt").
+_UNKNOWN_PRODUCT_RE = re.compile(
+    r"Produkt '([^']+)' finnes ikke i Odoo", re.IGNORECASE
+)
+
+
+def _aggregate_unknown_products(orders: list[dict]) -> list[dict]:
+    """Scan aggregated orders for unknown-product warnings and count them.
+
+    Returns a list of unknown-product summaries (most frequent first):
+        {sku, count, last_customer, last_order, last_ts, resolution}
+
+    `resolution` is "fallback" if the warning mentions it was mapped to the
+    generic fallback product, else "unmapped" (line has no product_id).
+    Transport auto-mapping is excluded.
+    """
+    by_sku: dict[str, dict] = {}
+
+    for o in orders:
+        for w in o.get("warnings") or []:
+            lower = w.lower()
+            # Skip transport lines — those are handled cleanly.
+            if "gjenkjent som frakt" in lower:
+                continue
+            m = _UNKNOWN_PRODUCT_RE.search(w)
+            if not m:
+                continue
+            sku = m.group(1).strip()
+            entry = by_sku.setdefault(sku, {
+                "sku": sku,
+                "count": 0,
+                "last_customer": None,
+                "last_order": None,
+                "last_ts": None,
+                "resolution": "unmapped",
+            })
+            entry["count"] += 1
+            if entry["last_ts"] is None or (o.get("last_ts") and o["last_ts"] > entry["last_ts"]):
+                entry["last_ts"] = o.get("last_ts")
+                entry["last_customer"] = o.get("customer")
+                entry["last_order"] = o.get("order_number")
+            if "bruker fallback-produkt" in lower:
+                entry["resolution"] = "fallback"
+
+    result = list(by_sku.values())
+    result.sort(key=lambda e: (-e["count"], e["sku"]))
+    return result
+
+
 # ---------------------------------------------------------------------------
 # HTML template (inline to keep it simple)
 # ---------------------------------------------------------------------------
@@ -232,7 +285,12 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
             f'&mdash; ordrenr prefikses med <code>{get_test_prefix()}</code></div>'
         )
 
-    # Aggregate events by order for the "Siste ordrer" section
+    # Aggregate events by order for the "Siste ordrer" section.
+    # We also use a broader window for the unknown-products summary
+    # so the list reflects patterns over time, not just the last 50 events.
+    all_orders = _aggregate_orders(list_events(last_n=500))
+    unknown_products = _aggregate_unknown_products(all_orders)
+
     orders = _aggregate_orders(events)[:25]
 
     order_rows = ""
@@ -314,6 +372,25 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
                 {warnings_block}
             </div>
         </details>'''
+
+    # Render unknown-product rows
+    unknown_rows = ""
+    for u in unknown_products:
+        resolution_label = {
+            "fallback": '<span class="badge badge-skipped">Fallback</span>',
+            "unmapped": '<span class="badge badge-error">Ukoblet</span>',
+        }.get(u["resolution"], "")
+        last_seen = u["last_ts"][:10] if u.get("last_ts") else "-"
+        last_customer = _escape(u.get("last_customer") or "-")
+        last_order = _escape(u.get("last_order") or "-")
+        unknown_rows += f"""<tr>
+            <td><code>{_escape(u['sku'])}</code></td>
+            <td class="uk-count">{u['count']}</td>
+            <td>{resolution_label}</td>
+            <td>{last_customer}</td>
+            <td><code>{last_order}</code></td>
+            <td class="uk-ts">{last_seen}</td>
+        </tr>"""
 
     dl_rows = ""
     for dl in dead_letters:
@@ -523,6 +600,28 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
     .orders-section {{ padding: 0; }}
     .orders-section h2 {{ padding: 16px 16px 12px; }}
     .orders-empty {{ padding: 30px; text-align: center; color: #aaa; }}
+
+    /* --- Ukjente produkter --- */
+    .unknown-products table {{ margin-top: 4px; }}
+    .unknown-products td.uk-count {{
+        font-weight: 700;
+        color: #9c4a00;
+        text-align: center;
+        font-variant-numeric: tabular-nums;
+    }}
+    .unknown-products td.uk-ts {{
+        color: #888;
+        font-family: monospace;
+        font-size: 11px;
+    }}
+    .unknown-products .uk-hint {{
+        margin-top: 10px;
+        font-size: 11px;
+        color: #666;
+        font-style: italic;
+        border-top: 1px dashed #e5e5e5;
+        padding-top: 8px;
+    }}
 </style>
 </head>
 <body>
@@ -549,6 +648,15 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
 <tr><th>CID</th><th>Tid</th><th>Fil</th><th>Ordre</th><th>Steg</th><th>Feil</th><th></th></tr>
 {dl_rows}
 </table>
+</section>'''}
+
+{"" if not unknown_products else f'''<section class="unknown-products">
+<h2>Ukjente produkter <span style="font-size:11px; color:#888; font-weight:400;">({len(unknown_products)} unike SKU-er som mangler i Odoo-katalogen)</span></h2>
+<table>
+<tr><th>Artikkelnr.</th><th>Antall</th><th>Håndtering</th><th>Sist sett hos</th><th>Siste ordre</th><th>Dato</th></tr>
+{unknown_rows}
+</table>
+<p class="uk-hint">Opprett disse produktene i Odoo for å unngå manuelt arbeid. Linjer merket <strong>Ukoblet</strong> mangler produktkobling i SO-en — innkjøpsordre (PO) genereres ikke før de er rettet.</p>
 </section>'''}
 
 <section class="orders-section">

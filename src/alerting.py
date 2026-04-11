@@ -63,9 +63,16 @@ class AlertService:
             )
             alerts.append(self._send_alert("ODOO_FEIL", msg, order, odoo_result))
 
-        # Alert 4: Unknown products
+        # Alert 4: Unknown products (matches warnings emitted by
+        # OdooOrderService._make_order_line when find_product returns None).
+        # Transport lines that got auto-mapped to the freight product are
+        # excluded — those are handled cleanly and don't need an alert.
         if odoo_result and odoo_result.warnings:
-            unknown = [w for w in odoo_result.warnings if "Ukjent produkt" in w]
+            unknown = [
+                w for w in odoo_result.warnings
+                if "finnes ikke i odoo" in w.lower()
+                and "gjenkjent som frakt" not in w.lower()
+            ]
             if unknown:
                 msg = (
                     f"Ordre {order.order_number} har {len(unknown)} ukjente produkter: "
