@@ -291,7 +291,7 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
     all_orders = _aggregate_orders(list_events(last_n=500))
     unknown_products = _aggregate_unknown_products(all_orders)
 
-    orders = _aggregate_orders(events)[:25]
+    orders = _aggregate_orders(events)[:50]
 
     order_rows = ""
     for o in orders:
@@ -307,6 +307,11 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
             "skipped": "badge-skipped",
             "error": "badge-error",
         }.get(status, "badge-pending")
+
+        # Determine filter category: ok, review, error, skipped
+        filter_status = status  # success, skipped, error, pending
+        if o["review"] and status == "success":
+            filter_status = "review"
 
         review_badge = ""
         if o["review"]:
@@ -329,7 +334,7 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
         if warn_info_count:
             warn_summary += f'<span class="warn-count info">{warn_info_count} info</span>'
         if not warn_summary:
-            warn_summary = '<span class="warn-count none">—</span>'
+            warn_summary = '<span class="warn-count none">&mdash;</span>'
 
         warnings_block = _render_order_warnings_block(o["warnings"])
 
@@ -339,9 +344,10 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
         total = _format_amount(o["total_amount"], o["currency"] or "NOK")
         line_count = o["line_count"] if o["line_count"] is not None else "-"
         message = _escape(o["message"] or "")
+        ts_date = o["last_ts"][:10] if o.get("last_ts") else ""
 
         order_rows += f'''
-        <details class="order-row">
+        <details class="order-row" data-status="{filter_status}" data-date="{ts_date}">
             <summary>
                 <span class="ordre-col">
                     <code>{order_num}</code>
@@ -402,7 +408,7 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
             <td>{dl['stage']}</td>
             <td class="err">{dl['error'][:80]}</td>
             <td><form method="post" action="/api/replay/{dl['source_file']}">
-                <button type="submit" class="btn btn-sm">Re-kjør</button>
+                <button type="submit" class="btn btn-sm">Re-kjor</button>
             </form></td>
         </tr>"""
 
@@ -437,213 +443,512 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ortopartner Ordreflyt</title>
 <style>
-    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
-    body {{ font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-           background: #f5f5f5; color: #333; padding: 20px; }}
-    h1 {{ color: #1a1a2e; margin-bottom: 8px; font-size: 24px; }}
-    .subtitle {{ color: #666; margin-bottom: 24px; font-size: 14px; }}
-    .cards {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-              gap: 12px; margin-bottom: 24px; }}
-    .card {{ background: #fff; border-radius: 8px; padding: 16px; text-align: center;
-             box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
-    .card .num {{ font-size: 32px; font-weight: 700; color: #1a1a2e; }}
-    .card .label {{ font-size: 12px; color: #888; margin-top: 4px; }}
-    .card.green .num {{ color: #2d6a4f; }}
-    .card.red .num {{ color: #c1121f; }}
-    .card.yellow .num {{ color: #e09f3e; }}
-    .card.blue .num {{ color: #457b9d; }}
-    .actions {{ margin-bottom: 24px; display: flex; gap: 8px; }}
-    .btn {{ background: #1a1a2e; color: #fff; border: none; padding: 8px 16px;
-            border-radius: 6px; cursor: pointer; font-size: 13px; }}
-    .btn:hover {{ background: #2a2a4e; }}
-    .btn-sm {{ padding: 4px 10px; font-size: 12px; }}
-    section {{ background: #fff; border-radius: 8px; padding: 16px; margin-bottom: 16px;
-               box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
-    section h2 {{ font-size: 16px; margin-bottom: 12px; color: #1a1a2e; }}
-    table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
-    th {{ text-align: left; padding: 6px 8px; border-bottom: 2px solid #eee;
-          color: #888; font-weight: 600; font-size: 11px; text-transform: uppercase; }}
-    td {{ padding: 6px 8px; border-bottom: 1px solid #f0f0f0; }}
-    code {{ background: #f0f0f0; padding: 2px 5px; border-radius: 3px; font-size: 11px; }}
-    .err {{ color: #c1121f; }}
-    .ok {{ color: #2d6a4f; }}
-    .empty {{ color: #aaa; padding: 20px; text-align: center; }}
-    .test-banner {{ background: #ffe066; color: #1a1a2e; padding: 10px 16px;
-                    border-radius: 6px; margin-bottom: 16px; font-weight: 600;
-                    border-left: 4px solid #e09f3e; font-size: 14px; }}
-    .test-banner code {{ background: #1a1a2e; color: #ffe066; }}
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
 
-    /* --- Siste ordrer section --- */
+    * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+    body {{
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        background: linear-gradient(135deg, #0f172a 0%, #1e293b 100%);
+        color: #e2e8f0;
+        min-height: 100vh;
+    }}
+
+    /* --- Top navigation bar --- */
+    .topbar {{
+        background: rgba(15, 23, 42, 0.8);
+        backdrop-filter: blur(12px);
+        border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+        padding: 16px 32px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        position: sticky;
+        top: 0;
+        z-index: 100;
+    }}
+    .topbar-left {{
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }}
+    .topbar-logo {{
+        width: 36px;
+        height: 36px;
+        background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+        border-radius: 10px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 18px;
+        font-weight: 700;
+        color: #fff;
+    }}
+    .topbar h1 {{
+        font-size: 18px;
+        font-weight: 700;
+        color: #f1f5f9;
+        letter-spacing: -0.3px;
+    }}
+    .topbar .subtitle {{
+        font-size: 12px;
+        color: #64748b;
+        margin-top: 1px;
+    }}
+    .topbar-actions {{
+        display: flex;
+        gap: 8px;
+        align-items: center;
+    }}
+    .topbar-actions .live-dot {{
+        width: 8px;
+        height: 8px;
+        background: #22c55e;
+        border-radius: 50%;
+        animation: pulse 2s ease-in-out infinite;
+        margin-right: 4px;
+    }}
+    @keyframes pulse {{
+        0%, 100% {{ opacity: 1; }}
+        50% {{ opacity: 0.4; }}
+    }}
+    .topbar-actions span.live-label {{
+        font-size: 12px;
+        color: #22c55e;
+        font-weight: 500;
+        margin-right: 16px;
+    }}
+
+    .container {{
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 24px 32px;
+    }}
+
+    /* --- Test banner --- */
+    .test-banner {{
+        background: linear-gradient(90deg, rgba(234, 179, 8, 0.15), rgba(234, 179, 8, 0.05));
+        color: #fbbf24;
+        padding: 12px 20px;
+        border-radius: 12px;
+        margin-bottom: 20px;
+        font-weight: 600;
+        border: 1px solid rgba(234, 179, 8, 0.3);
+        font-size: 14px;
+    }}
+    .test-banner code {{
+        background: rgba(234, 179, 8, 0.2);
+        color: #fbbf24;
+        padding: 2px 8px;
+        border-radius: 4px;
+    }}
+
+    /* --- Stat cards --- */
+    .cards {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+        gap: 16px;
+        margin-bottom: 28px;
+    }}
+    .card {{
+        background: rgba(30, 41, 59, 0.7);
+        backdrop-filter: blur(8px);
+        border: 1px solid rgba(148, 163, 184, 0.1);
+        border-radius: 16px;
+        padding: 20px;
+        text-align: center;
+        transition: transform 0.15s, border-color 0.15s;
+        position: relative;
+        overflow: hidden;
+    }}
+    .card::before {{
+        content: '';
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 3px;
+        border-radius: 16px 16px 0 0;
+    }}
+    .card:hover {{
+        transform: translateY(-2px);
+        border-color: rgba(148, 163, 184, 0.25);
+    }}
+    .card .num {{
+        font-size: 36px;
+        font-weight: 700;
+        line-height: 1;
+        margin-bottom: 6px;
+    }}
+    .card .label {{
+        font-size: 12px;
+        color: #94a3b8;
+        font-weight: 500;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }}
+    .card.blue .num {{ color: #60a5fa; }}
+    .card.blue::before {{ background: linear-gradient(90deg, #3b82f6, #60a5fa); }}
+    .card.green .num {{ color: #4ade80; }}
+    .card.green::before {{ background: linear-gradient(90deg, #22c55e, #4ade80); }}
+    .card.yellow .num {{ color: #fbbf24; }}
+    .card.yellow::before {{ background: linear-gradient(90deg, #eab308, #fbbf24); }}
+    .card.red .num {{ color: #f87171; }}
+    .card.red::before {{ background: linear-gradient(90deg, #ef4444, #f87171); }}
+
+    /* --- Buttons --- */
+    .btn {{
+        background: linear-gradient(135deg, #3b82f6, #6366f1);
+        color: #fff;
+        border: none;
+        padding: 10px 20px;
+        border-radius: 10px;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 600;
+        transition: all 0.15s;
+        letter-spacing: 0.2px;
+    }}
+    .btn:hover {{
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+    }}
+    .btn-sm {{
+        padding: 5px 12px;
+        font-size: 11px;
+        border-radius: 6px;
+    }}
+
+    /* --- Filter bar --- */
+    .filter-bar {{
+        display: flex;
+        gap: 12px;
+        margin-bottom: 16px;
+        flex-wrap: wrap;
+        align-items: center;
+    }}
+    .filter-group {{
+        display: flex;
+        gap: 2px;
+        background: rgba(30, 41, 59, 0.5);
+        border-radius: 10px;
+        padding: 3px;
+        border: 1px solid rgba(148, 163, 184, 0.1);
+    }}
+    .filter-group label {{
+        font-size: 11px;
+        font-weight: 600;
+        color: #64748b;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        padding: 6px 10px;
+        margin-right: 4px;
+        align-self: center;
+    }}
+    .filter-btn {{
+        padding: 6px 14px;
+        border: none;
+        background: transparent;
+        color: #94a3b8;
+        font-size: 12px;
+        font-weight: 500;
+        cursor: pointer;
+        border-radius: 8px;
+        transition: all 0.15s;
+        white-space: nowrap;
+    }}
+    .filter-btn:hover {{
+        color: #e2e8f0;
+        background: rgba(148, 163, 184, 0.1);
+    }}
+    .filter-btn.active {{
+        background: linear-gradient(135deg, #3b82f6, #6366f1);
+        color: #fff;
+        font-weight: 600;
+    }}
+
+    /* --- Sections --- */
+    section {{
+        background: rgba(30, 41, 59, 0.6);
+        backdrop-filter: blur(8px);
+        border: 1px solid rgba(148, 163, 184, 0.08);
+        border-radius: 16px;
+        padding: 20px;
+        margin-bottom: 20px;
+    }}
+    section h2 {{
+        font-size: 15px;
+        font-weight: 600;
+        color: #f1f5f9;
+        margin-bottom: 14px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }}
+    section h2 .section-icon {{
+        width: 24px;
+        height: 24px;
+        border-radius: 6px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 13px;
+    }}
+
+    /* --- Tables --- */
+    table {{
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+    }}
+    th {{
+        text-align: left;
+        padding: 8px 10px;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+        color: #64748b;
+        font-weight: 600;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }}
+    td {{
+        padding: 8px 10px;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.05);
+        color: #cbd5e1;
+    }}
+    tr:hover td {{
+        background: rgba(148, 163, 184, 0.03);
+    }}
+    code {{
+        background: rgba(148, 163, 184, 0.1);
+        padding: 2px 7px;
+        border-radius: 4px;
+        font-size: 11px;
+        color: #93c5fd;
+        font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    }}
+    .err {{ color: #f87171; }}
+    .ok {{ color: #4ade80; }}
+    .empty {{ color: #64748b; padding: 30px; text-align: center; }}
+
+    /* --- Order list section --- */
     .orders-header, .order-row summary {{
         display: grid;
         grid-template-columns: 2.4fr 2fr 1fr 0.7fr 0.5fr 1.3fr 1.3fr 0.8fr;
         gap: 8px;
-        padding: 10px 12px;
+        padding: 12px 16px;
         align-items: center;
         font-size: 13px;
     }}
     .orders-header {{
-        background: #f0f3f8;
-        color: #555;
+        background: rgba(148, 163, 184, 0.05);
+        color: #64748b;
         font-weight: 600;
         font-size: 11px;
         text-transform: uppercase;
-        border-radius: 6px 6px 0 0;
+        letter-spacing: 0.5px;
+        border-radius: 12px 12px 0 0;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.08);
     }}
     .order-row {{
-        background: #fff;
-        border-bottom: 1px solid #eef0f4;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.05);
     }}
     .order-row:last-child {{ border-bottom: none; }}
     .order-row summary {{
         cursor: pointer;
         list-style: none;
-        transition: background 0.1s;
+        transition: background 0.15s;
+        border-radius: 4px;
     }}
     .order-row summary::-webkit-details-marker {{ display: none; }}
-    .order-row summary:hover {{ background: #f8fafc; }}
-    .order-row[open] summary {{ background: #f1f5f9; }}
+    .order-row summary:hover {{ background: rgba(148, 163, 184, 0.05); }}
+    .order-row[open] summary {{ background: rgba(59, 130, 246, 0.08); }}
+    .order-row.hidden-by-filter {{ display: none; }}
 
     .ordre-col {{ display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }}
-    .customer-col {{ color: #334; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
-    .so-col {{ font-family: monospace; color: #457b9d; }}
-    .conf-col, .lines-col {{ text-align: center; color: #666; }}
-    .total-col {{ text-align: right; font-variant-numeric: tabular-nums; color: #1a1a2e; font-weight: 600; }}
+    .customer-col {{ color: #cbd5e1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+    .so-col {{ font-family: 'JetBrains Mono', monospace; color: #60a5fa; font-size: 12px; }}
+    .conf-col, .lines-col {{ text-align: center; color: #94a3b8; }}
+    .total-col {{ text-align: right; font-variant-numeric: tabular-nums; color: #f1f5f9; font-weight: 600; }}
     .warn-col {{ text-align: left; }}
-    .ts-col {{ text-align: right; color: #999; font-family: monospace; font-size: 11px; }}
+    .ts-col {{ text-align: right; color: #64748b; font-family: 'JetBrains Mono', monospace; font-size: 11px; }}
 
+    /* --- Badges --- */
     .badge {{
         display: inline-block;
-        padding: 2px 7px;
-        border-radius: 10px;
+        padding: 3px 8px;
+        border-radius: 6px;
         font-size: 10px;
         font-weight: 700;
         text-transform: uppercase;
-        letter-spacing: 0.3px;
+        letter-spacing: 0.4px;
     }}
-    .badge-success {{ background: #d4edda; color: #155724; }}
-    .badge-skipped {{ background: #fff3cd; color: #856404; }}
-    .badge-error {{ background: #f8d7da; color: #721c24; }}
-    .badge-pending {{ background: #e2e3e5; color: #383d41; }}
-    .badge-review {{ background: #fce5cd; color: #9c4a00; }}
-    .badge-archived {{ background: #cfe2ff; color: #084298; }}
+    .badge-success {{ background: rgba(34, 197, 94, 0.15); color: #4ade80; border: 1px solid rgba(34, 197, 94, 0.3); }}
+    .badge-skipped {{ background: rgba(234, 179, 8, 0.15); color: #fbbf24; border: 1px solid rgba(234, 179, 8, 0.3); }}
+    .badge-error {{ background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }}
+    .badge-pending {{ background: rgba(148, 163, 184, 0.15); color: #94a3b8; border: 1px solid rgba(148, 163, 184, 0.3); }}
+    .badge-review {{ background: rgba(251, 146, 60, 0.15); color: #fb923c; border: 1px solid rgba(251, 146, 60, 0.3); }}
+    .badge-archived {{ background: rgba(96, 165, 250, 0.15); color: #60a5fa; border: 1px solid rgba(96, 165, 250, 0.3); }}
 
     .warn-count {{
         display: inline-block;
-        padding: 1px 6px;
-        border-radius: 8px;
+        padding: 2px 8px;
+        border-radius: 6px;
         font-size: 11px;
         font-weight: 600;
         margin-right: 3px;
     }}
-    .warn-count.warn {{ background: #fce5cd; color: #9c4a00; }}
-    .warn-count.info {{ background: #e3f2fd; color: #0d47a1; }}
-    .warn-count.none {{ color: #bbb; }}
+    .warn-count.warn {{ background: rgba(251, 146, 60, 0.15); color: #fb923c; }}
+    .warn-count.info {{ background: rgba(96, 165, 250, 0.15); color: #60a5fa; }}
+    .warn-count.none {{ color: #475569; }}
 
+    /* --- Order detail panel --- */
     .order-detail {{
-        padding: 16px 20px;
-        background: #fafbfc;
-        border-top: 1px solid #e8eaf0;
+        padding: 20px 24px;
+        background: rgba(15, 23, 42, 0.5);
+        border-top: 1px solid rgba(148, 163, 184, 0.08);
+        border-radius: 0 0 8px 8px;
     }}
     .order-meta {{
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-        gap: 8px 16px;
-        margin-bottom: 12px;
+        gap: 8px 20px;
+        margin-bottom: 16px;
         font-size: 12px;
-        color: #555;
+        color: #94a3b8;
     }}
-    .order-meta strong {{ color: #333; margin-right: 4px; }}
+    .order-meta strong {{ color: #cbd5e1; margin-right: 4px; }}
     .order-message {{
-        background: #fff;
-        border-left: 3px solid #457b9d;
-        padding: 8px 12px;
-        margin-bottom: 12px;
+        background: rgba(59, 130, 246, 0.08);
+        border-left: 3px solid #3b82f6;
+        padding: 10px 14px;
+        margin-bottom: 14px;
         font-size: 12px;
-        color: #444;
-        border-radius: 0 4px 4px 0;
+        color: #94a3b8;
+        border-radius: 0 8px 8px 0;
     }}
 
     .warning-group {{
-        background: #fff;
-        border-radius: 5px;
-        padding: 10px 14px;
+        border-radius: 8px;
+        padding: 12px 16px;
         margin-bottom: 8px;
-        border-left: 4px solid #ccc;
+        border-left: 4px solid #475569;
     }}
-    .warning-group.warn {{ border-left-color: #e09f3e; background: #fffbf2; }}
-    .warning-group.info {{ border-left-color: #457b9d; background: #f4f8fc; }}
+    .warning-group.warn {{
+        border-left-color: #f59e0b;
+        background: rgba(245, 158, 11, 0.06);
+    }}
+    .warning-group.info {{
+        border-left-color: #3b82f6;
+        background: rgba(59, 130, 246, 0.06);
+    }}
     .warning-group-title {{
         font-weight: 700;
         font-size: 11px;
         text-transform: uppercase;
-        color: #666;
-        margin-bottom: 6px;
-        letter-spacing: 0.3px;
+        color: #64748b;
+        margin-bottom: 8px;
+        letter-spacing: 0.5px;
     }}
-    .warning-group.warn .warning-group-title {{ color: #9c4a00; }}
-    .warning-group.info .warning-group-title {{ color: #0d47a1; }}
+    .warning-group.warn .warning-group-title {{ color: #fbbf24; }}
+    .warning-group.info .warning-group-title {{ color: #60a5fa; }}
     .warning-group ul {{
         margin: 0;
         padding-left: 18px;
         font-size: 12px;
-        line-height: 1.6;
+        line-height: 1.7;
     }}
-    .warning-group li {{ color: #444; }}
+    .warning-group li {{ color: #94a3b8; }}
     .no-warnings {{
-        color: #9aa;
+        color: #475569;
         font-size: 12px;
         font-style: italic;
         padding: 6px 0;
     }}
 
     .orders-section {{ padding: 0; }}
-    .orders-section h2 {{ padding: 16px 16px 12px; }}
-    .orders-empty {{ padding: 30px; text-align: center; color: #aaa; }}
+    .orders-section h2 {{ padding: 20px 20px 14px; }}
+    .orders-empty {{ padding: 40px; text-align: center; color: #475569; font-size: 14px; }}
 
-    /* --- Ukjente produkter --- */
+    /* --- Unknown products table --- */
     .unknown-products table {{ margin-top: 4px; }}
     .unknown-products td.uk-count {{
         font-weight: 700;
-        color: #9c4a00;
+        color: #fb923c;
         text-align: center;
         font-variant-numeric: tabular-nums;
     }}
     .unknown-products td.uk-ts {{
-        color: #888;
-        font-family: monospace;
+        color: #64748b;
+        font-family: 'JetBrains Mono', monospace;
         font-size: 11px;
     }}
     .unknown-products .uk-hint {{
-        margin-top: 10px;
+        margin-top: 14px;
         font-size: 11px;
-        color: #666;
+        color: #64748b;
         font-style: italic;
-        border-top: 1px dashed #e5e5e5;
-        padding-top: 8px;
+        border-top: 1px solid rgba(148, 163, 184, 0.1);
+        padding-top: 10px;
+    }}
+    .unknown-products .uk-hint strong {{ color: #94a3b8; }}
+
+    /* --- Collapsible event log --- */
+    .events-toggle {{
+        cursor: pointer;
+        user-select: none;
+    }}
+    .events-toggle .chevron {{
+        display: inline-block;
+        transition: transform 0.2s;
+        font-size: 12px;
+        color: #64748b;
+    }}
+    details[open] .events-toggle .chevron {{
+        transform: rotate(90deg);
+    }}
+
+    /* --- Filter result counter --- */
+    .filter-result-count {{
+        font-size: 12px;
+        color: #64748b;
+        margin-left: auto;
+        font-weight: 500;
     }}
 </style>
 </head>
 <body>
-<h1>Ortopartner Ordreflyt</h1>
-<p class="subtitle">Automatisk ordrebehandling: E-post &rarr; PDF &rarr; Odoo &rarr; SharePoint</p>
+
+<div class="topbar">
+    <div class="topbar-left">
+        <div class="topbar-logo">O</div>
+        <div>
+            <h1>Ortopartner Ordreflyt</h1>
+            <div class="subtitle">E-post &rarr; PDF &rarr; Odoo &rarr; SharePoint</div>
+        </div>
+    </div>
+    <div class="topbar-actions">
+        <span class="live-dot"></span>
+        <span class="live-label">Live</span>
+        <form method="post" action="/api/poll" style="margin:0;">
+            <button type="submit" class="btn">Sjekk e-post nå</button>
+        </form>
+    </div>
+</div>
+
+<div class="container">
 
 {test_mode_banner}
 
 <div class="cards">
-    <div class="card blue"><div class="num">{stats['emails_processed']}</div><div class="label">E-poster behandlet</div></div>
+    <div class="card blue"><div class="num">{stats['emails_processed']}</div><div class="label">E-poster</div></div>
     <div class="card green"><div class="num">{stats['success']}</div><div class="label">Ordrer OK</div></div>
-    <div class="card yellow"><div class="num">{stats['skipped']}</div><div class="label">Duplikater</div></div>
     <div class="card yellow"><div class="num">{stats['review']}</div><div class="label">Til review</div></div>
+    <div class="card yellow"><div class="num">{stats['skipped']}</div><div class="label">Duplikater</div></div>
     <div class="card red"><div class="num">{stats['dead_letters']}</div><div class="label">Feilede</div></div>
 </div>
 
-<div class="actions">
-    <form method="post" action="/api/poll"><button type="submit" class="btn">Sjekk e-post nå</button></form>
-</div>
-
 {"" if not dead_letters else f'''<section>
-<h2>Feilede ordrer (dead-letter)</h2>
+<h2><span class="section-icon" style="background:rgba(239,68,68,0.15);">!</span> Feilede ordrer</h2>
 <table>
 <tr><th>CID</th><th>Tid</th><th>Fil</th><th>Ordre</th><th>Steg</th><th>Feil</th><th></th></tr>
 {dl_rows}
@@ -651,38 +956,142 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
 </section>'''}
 
 {"" if not unknown_products else f'''<section class="unknown-products">
-<h2>Ukjente produkter <span style="font-size:11px; color:#888; font-weight:400;">({len(unknown_products)} unike SKU-er som mangler i Odoo-katalogen)</span></h2>
+<h2><span class="section-icon" style="background:rgba(251,146,60,0.15);">?</span> Ukjente produkter <span style="font-size:11px; color:#64748b; font-weight:400; margin-left:4px;">({len(unknown_products)} SKU-er mangler i Odoo)</span></h2>
 <table>
-<tr><th>Artikkelnr.</th><th>Antall</th><th>Håndtering</th><th>Sist sett hos</th><th>Siste ordre</th><th>Dato</th></tr>
+<tr><th>Artikkelnr.</th><th>Antall</th><th>Handling</th><th>Sist sett hos</th><th>Siste ordre</th><th>Dato</th></tr>
 {unknown_rows}
 </table>
-<p class="uk-hint">Opprett disse produktene i Odoo for å unngå manuelt arbeid. Linjer merket <strong>Ukoblet</strong> mangler produktkobling i SO-en — innkjøpsordre (PO) genereres ikke før de er rettet.</p>
+<p class="uk-hint">Opprett disse produktene i Odoo for automatisk behandling. Linjer merket <strong>Ukoblet</strong> mangler produktkobling i SO-en.</p>
 </section>'''}
 
 <section class="orders-section">
-<h2>Siste ordrer <span style="font-size:11px; color:#888; font-weight:400;">(klikk for detaljer)</span></h2>
-{f'<div class="orders-empty">Ingen ordrer behandlet ennå.</div>' if not orders else f'''
+<h2><span class="section-icon" style="background:rgba(59,130,246,0.15);">&#9776;</span> Ordrer <span style="font-size:11px; color:#64748b; font-weight:400; margin-left:4px;">(klikk for detaljer)</span></h2>
+<div style="padding: 0 20px 14px;">
+    <div class="filter-bar">
+        <div class="filter-group">
+            <label>Periode</label>
+            <button class="filter-btn active" data-filter="time" data-value="all" onclick="setFilter('time', 'all', this)">Alle</button>
+            <button class="filter-btn" data-filter="time" data-value="today" onclick="setFilter('time', 'today', this)">I dag</button>
+            <button class="filter-btn" data-filter="time" data-value="week" onclick="setFilter('time', 'week', this)">Denne uken</button>
+            <button class="filter-btn" data-filter="time" data-value="month" onclick="setFilter('time', 'month', this)">Denne mnd</button>
+        </div>
+        <div class="filter-group">
+            <label>Status</label>
+            <button class="filter-btn active" data-filter="status" data-value="all" onclick="setFilter('status', 'all', this)">Alle</button>
+            <button class="filter-btn" data-filter="status" data-value="success" onclick="setFilter('status', 'success', this)">OK</button>
+            <button class="filter-btn" data-filter="status" data-value="review" onclick="setFilter('status', 'review', this)">Review</button>
+            <button class="filter-btn" data-filter="status" data-value="error" onclick="setFilter('status', 'error', this)">Feil</button>
+            <button class="filter-btn" data-filter="status" data-value="skipped" onclick="setFilter('status', 'skipped', this)">Duplikat</button>
+        </div>
+        <span class="filter-result-count" id="filterCount"></span>
+    </div>
+</div>
+{f'<div class="orders-empty">Ingen ordrer behandlet enda.</div>' if not orders else f'''
 <div class="orders-header">
     <span>Ordre / Status</span>
     <span>Kunde</span>
     <span>SO</span>
     <span>Konfid.</span>
     <span>Linjer</span>
-    <span style="text-align:right;">Totalbeløp</span>
+    <span style="text-align:right;">Total</span>
     <span>Advarsler</span>
     <span style="text-align:right;">Tid</span>
 </div>
+<div id="orderList">
 {order_rows}
+</div>
 '''}
 </section>
 
 <section>
-<h2>Siste hendelser (råformat)</h2>
-{"<p class='empty'>Ingen hendelser ennå.</p>" if not events else f'''<table>
+<details>
+    <summary class="events-toggle">
+        <h2 style="display:inline-flex; align-items:center; gap:8px; cursor:pointer;">
+            <span class="section-icon" style="background:rgba(148,163,184,0.1);">&#8862;</span>
+            Hendelseslogg
+            <span class="chevron">&#9654;</span>
+            <span style="font-size:11px; color:#64748b; font-weight:400;">({len(events)} hendelser)</span>
+        </h2>
+    </summary>
+    {"<p class='empty'>Ingen hendelser enda.</p>" if not events else f'''<table style="margin-top:12px;">
 <tr><th>Tid</th><th>CID</th><th>Hendelse</th><th>Status</th><th>Ordre</th><th>Detaljer</th></tr>
 {event_rows}
 </table>'''}
+</details>
 </section>
+
+</div><!-- container -->
+
+<script>
+// Filter state
+const filters = {{ time: 'all', status: 'all' }};
+
+function setFilter(type, value, btn) {{
+    filters[type] = value;
+    // Update active button in group
+    const group = btn.parentElement;
+    group.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    applyFilters();
+}}
+
+function getDateStr(d) {{
+    return d.getFullYear() + '-' +
+        String(d.getMonth() + 1).padStart(2, '0') + '-' +
+        String(d.getDate()).padStart(2, '0');
+}}
+
+function getWeekStart(d) {{
+    const day = d.getDay();
+    const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Monday
+    return new Date(d.getFullYear(), d.getMonth(), diff);
+}}
+
+function applyFilters() {{
+    const rows = document.querySelectorAll('.order-row');
+    const today = getDateStr(new Date());
+    const weekStart = getDateStr(getWeekStart(new Date()));
+    const monthStart = today.substring(0, 8) + '01';
+
+    let visible = 0;
+    let total = rows.length;
+
+    rows.forEach(row => {{
+        let show = true;
+        const rowStatus = row.dataset.status;
+        const rowDate = row.dataset.date;
+
+        // Status filter
+        if (filters.status !== 'all' && rowStatus !== filters.status) {{
+            show = false;
+        }}
+
+        // Time filter
+        if (show && filters.time !== 'all') {{
+            if (filters.time === 'today' && rowDate !== today) show = false;
+            else if (filters.time === 'week' && rowDate < weekStart) show = false;
+            else if (filters.time === 'month' && rowDate < monthStart) show = false;
+        }}
+
+        if (show) {{
+            row.classList.remove('hidden-by-filter');
+            visible++;
+        }} else {{
+            row.classList.add('hidden-by-filter');
+        }}
+    }});
+
+    const countEl = document.getElementById('filterCount');
+    if (filters.time === 'all' && filters.status === 'all') {{
+        countEl.textContent = total + ' ordrer';
+    }} else {{
+        countEl.textContent = visible + ' av ' + total + ' ordrer';
+    }}
+}}
+
+// Initialize count on load
+document.addEventListener('DOMContentLoaded', applyFilters);
+</script>
 
 </body>
 </html>"""

@@ -68,6 +68,14 @@ class OdooOrderService:
                     f"(id={partner_id}). Sjekk at dette ikke er en duplikat, og legg til "
                     f"betalingsbetingelser/prisliste manuelt."
                 )
+            elif not order.delivery_address:
+                # Existing partner in Odoo already has a registered address,
+                # so the validator warning about missing delivery address is
+                # unnecessary noise — remove it.
+                result.warnings = [
+                    w for w in result.warnings
+                    if "leveringsadresse" not in w.lower()
+                ]
 
             # 3. Create SO with line items
             so_id, warnings = self._create_sale_order(order, partner_id)

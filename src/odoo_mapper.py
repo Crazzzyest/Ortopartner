@@ -97,14 +97,17 @@ class OdooMapper:
         """Search for partner using multi-step matching:
 
         1. Exact name match
-        2. ilike (case-insensitive contains)
+        2. ilike (case-insensitive contains), with whitespace normalization
         3. Normalized fuzzy matching (token overlap)
         4. City-based disambiguation for multi-location companies
         """
+        # Normalize multiple whitespace to single space for matching
+        normalized_name = re.sub(r"\s+", " ", name).strip()
+
         # Step 1: Exact match
         results = self._client.search_read(
             "res.partner",
-            [["name", "=", name], ["customer_rank", ">", 0]],
+            [["name", "=", normalized_name], ["customer_rank", ">", 0]],
             ["id", "name"],
             limit=1,
         )
@@ -112,26 +115,31 @@ class OdooMapper:
             return results[0]["id"]
 
         # Step 2: ilike (partial match)
+        # Use individual tokens joined by '%' to handle extra whitespace
+        # in Odoo partner names (e.g. "Atterås  AS" with double space).
+        ilike_pattern = "%".join(normalized_name.split())
         results = self._client.search_read(
             "res.partner",
-            [["name", "ilike", name], ["customer_rank", ">", 0]],
-            ["id", "name", "city"],
+            [["name", "ilike", ilike_pattern], ["customer_rank", ">", 0]],
+            ["id", "name", "city", "customer_rank"],
             limit=20,
         )
         if len(results) == 1:
             logger.info("Partner ilike-match: '%s' -> '%s'", name, results[0]["name"])
             return results[0]["id"]
 
-        # If multiple ilike results, try city disambiguation
-        if len(results) > 1 and order and order.delivery_address:
-            best = self._disambiguate_by_city(results, order)
-            if best:
-                return best
+        # If multiple ilike results, try city disambiguation first
+        if len(results) > 1:
+            if order and order.delivery_address:
+                best = self._disambiguate_by_city(results, order)
+                if best:
+                    return best
 
-            # Fall back to first result if can't disambiguate
+            # Fall back to partner with highest customer_rank (most used)
+            results.sort(key=lambda r: r.get("customer_rank", 0), reverse=True)
             logger.info(
-                "Partner ilike-match (flere treff, bruker første): '%s' -> '%s'",
-                name, results[0]["name"],
+                "Partner ilike-match (flere treff, bruker høyest rangert): '%s' -> '%s' (rank=%s)",
+                name, results[0]["name"], results[0].get("customer_rank", 0),
             )
             return results[0]["id"]
 
