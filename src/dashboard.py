@@ -6,10 +6,12 @@ import json
 import logging
 import re
 import threading
+import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .event_log import list_dead_letters, list_events, resolve_dead_letter
@@ -17,6 +19,18 @@ from .event_log import list_dead_letters, list_events, resolve_dead_letter
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Ortopartner Ordreflyt", version="1.0")
+
+# ---------------------------------------------------------------------------
+# Poll state tracking (visible to dashboard JS)
+# ---------------------------------------------------------------------------
+
+_poll_state: dict = {
+    "running": False,
+    "last_run": None,        # ISO timestamp of last completed run
+    "last_result": None,     # number of orders processed
+    "last_error": None,      # error message if last run failed
+    "next_scheduled": None,  # ISO timestamp of next scheduled run
+}
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -511,11 +525,66 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
         0%, 100% {{ opacity: 1; }}
         50% {{ opacity: 0.4; }}
     }}
+    @keyframes spin {{
+        to {{ transform: rotate(360deg); }}
+    }}
     .topbar-actions span.live-label {{
         font-size: 12px;
         color: #22c55e;
         font-weight: 500;
         margin-right: 16px;
+    }}
+    .poll-status {{
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-right: 12px;
+    }}
+    .poll-status .spinner {{
+        width: 16px;
+        height: 16px;
+        border: 2px solid rgba(96, 165, 250, 0.3);
+        border-top-color: #60a5fa;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+        display: none;
+    }}
+    .poll-status.polling .spinner {{ display: block; }}
+    .poll-status .poll-text {{
+        font-size: 11px;
+        color: #64748b;
+        max-width: 200px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }}
+    .poll-status.polling .poll-text {{ color: #60a5fa; }}
+    .poll-btn {{
+        background: linear-gradient(135deg, #3b82f6, #6366f1);
+        color: #fff;
+        border: none;
+        padding: 10px 20px;
+        border-radius: 10px;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 600;
+        transition: all 0.15s;
+        letter-spacing: 0.2px;
+    }}
+    .poll-btn:hover {{
+        transform: translateY(-1px);
+        box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
+    }}
+    .poll-btn:disabled {{
+        opacity: 0.5;
+        cursor: not-allowed;
+        transform: none;
+        box-shadow: none;
+    }}
+    .schedule-info {{
+        font-size: 10px;
+        color: #475569;
+        margin-top: 2px;
     }}
 
     .container {{
@@ -927,11 +996,16 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
         </div>
     </div>
     <div class="topbar-actions">
+        <div class="poll-status" id="pollStatus">
+            <div class="spinner"></div>
+            <div>
+                <div class="poll-text" id="pollText"></div>
+                <div class="schedule-info" id="scheduleInfo"></div>
+            </div>
+        </div>
         <span class="live-dot"></span>
         <span class="live-label">Live</span>
-        <form method="post" action="/api/poll" style="margin:0;">
-            <button type="submit" class="btn">Sjekk e-post nå</button>
-        </form>
+        <button class="poll-btn" id="pollBtn" onclick="triggerPoll()">Sjekk e-post nå</button>
     </div>
 </div>
 
@@ -1023,12 +1097,11 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
 </div><!-- container -->
 
 <script>
-// Filter state
+// ── Filter state ──────────────────────────────────────────────
 const filters = {{ time: 'all', status: 'all' }};
 
 function setFilter(type, value, btn) {{
     filters[type] = value;
-    // Update active button in group
     const group = btn.parentElement;
     group.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
@@ -1043,7 +1116,7 @@ function getDateStr(d) {{
 
 function getWeekStart(d) {{
     const day = d.getDay();
-    const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Monday
+    const diff = d.getDate() - day + (day === 0 ? -6 : 1);
     return new Date(d.getFullYear(), d.getMonth(), diff);
 }}
 
@@ -1052,45 +1125,125 @@ function applyFilters() {{
     const today = getDateStr(new Date());
     const weekStart = getDateStr(getWeekStart(new Date()));
     const monthStart = today.substring(0, 8) + '01';
-
-    let visible = 0;
-    let total = rows.length;
+    let visible = 0, total = rows.length;
 
     rows.forEach(row => {{
         let show = true;
         const rowStatus = row.dataset.status;
         const rowDate = row.dataset.date;
-
-        // Status filter
-        if (filters.status !== 'all' && rowStatus !== filters.status) {{
-            show = false;
-        }}
-
-        // Time filter
+        if (filters.status !== 'all' && rowStatus !== filters.status) show = false;
         if (show && filters.time !== 'all') {{
             if (filters.time === 'today' && rowDate !== today) show = false;
             else if (filters.time === 'week' && rowDate < weekStart) show = false;
             else if (filters.time === 'month' && rowDate < monthStart) show = false;
         }}
-
-        if (show) {{
-            row.classList.remove('hidden-by-filter');
-            visible++;
-        }} else {{
-            row.classList.add('hidden-by-filter');
-        }}
+        row.classList.toggle('hidden-by-filter', !show);
+        if (show) visible++;
     }});
 
     const countEl = document.getElementById('filterCount');
-    if (filters.time === 'all' && filters.status === 'all') {{
-        countEl.textContent = total + ' ordrer';
-    }} else {{
-        countEl.textContent = visible + ' av ' + total + ' ordrer';
-    }}
+    countEl.textContent = (filters.time === 'all' && filters.status === 'all')
+        ? total + ' ordrer'
+        : visible + ' av ' + total + ' ordrer';
 }}
 
-// Initialize count on load
-document.addEventListener('DOMContentLoaded', applyFilters);
+// ── Poll trigger + status ─────────────────────────────────────
+let pollCheckInterval = null;
+
+function triggerPoll() {{
+    const btn = document.getElementById('pollBtn');
+    btn.disabled = true;
+    btn.textContent = 'Sjekker...';
+
+    fetch('/api/poll', {{
+        method: 'POST',
+        headers: {{ 'Accept': 'application/json' }}
+    }}).then(() => {{
+        startPollStatusCheck();
+    }}).catch(err => {{
+        btn.disabled = false;
+        btn.textContent = 'Sjekk e-post nå';
+        console.error('Poll trigger failed:', err);
+    }});
+}}
+
+function startPollStatusCheck() {{
+    if (pollCheckInterval) clearInterval(pollCheckInterval);
+    updatePollUI(true, 'Sjekker e-post...');
+    pollCheckInterval = setInterval(checkPollStatus, 2000);
+}}
+
+function checkPollStatus() {{
+    fetch('/api/poll/status')
+        .then(r => r.json())
+        .then(state => {{
+            if (state.running) {{
+                updatePollUI(true, 'Sjekker e-post...');
+            }} else {{
+                // Poll finished — stop checking and refresh
+                clearInterval(pollCheckInterval);
+                pollCheckInterval = null;
+
+                if (state.last_error) {{
+                    updatePollUI(false, 'Feil: ' + state.last_error);
+                }} else if (state.last_result !== null) {{
+                    updatePollUI(false, state.last_result + ' ordre(r) behandlet');
+                }} else {{
+                    updatePollUI(false, '');
+                }}
+
+                // Re-enable button
+                const btn = document.getElementById('pollBtn');
+                btn.disabled = false;
+                btn.textContent = 'Sjekk e-post nå';
+
+                // Auto-refresh page after 1.5s to show new data
+                if (state.last_result > 0) {{
+                    setTimeout(() => window.location.reload(), 1500);
+                }}
+            }}
+
+            // Always update schedule info
+            updateScheduleInfo(state);
+        }})
+        .catch(() => {{}});
+}}
+
+function updatePollUI(isPolling, text) {{
+    const container = document.getElementById('pollStatus');
+    const textEl = document.getElementById('pollText');
+    container.classList.toggle('polling', isPolling);
+    textEl.textContent = text;
+}}
+
+function updateScheduleInfo(state) {{
+    const el = document.getElementById('scheduleInfo');
+    if (!el) return;
+    const parts = [];
+    if (state.last_run) {{
+        const lr = new Date(state.last_run);
+        parts.push('Sist: ' + lr.toLocaleTimeString('nb-NO', {{ hour: '2-digit', minute: '2-digit' }}));
+    }}
+    if (state.next_scheduled) {{
+        const ns = new Date(state.next_scheduled);
+        const now = new Date();
+        if (ns.toDateString() === now.toDateString()) {{
+            parts.push('Neste: i dag kl. ' + ns.toLocaleTimeString('nb-NO', {{ hour: '2-digit', minute: '2-digit' }}));
+        }} else {{
+            parts.push('Neste: i morgen kl. ' + ns.toLocaleTimeString('nb-NO', {{ hour: '2-digit', minute: '2-digit' }}));
+        }}
+    }}
+    el.textContent = parts.join(' · ');
+}}
+
+// ── Init ──────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {{
+    applyFilters();
+    // Check poll status on load (in case a poll is running)
+    checkPollStatus();
+    // Periodically refresh schedule info (every 60s)
+    setInterval(checkPollStatus, 60000);
+}});
 </script>
 
 </body>
@@ -1125,10 +1278,20 @@ async def api_dead_letters():
 
 
 @app.post("/api/poll")
-async def api_poll(background_tasks: BackgroundTasks):
+async def api_poll(background_tasks: BackgroundTasks, request: Request):
     """Trigger email polling in the background."""
     background_tasks.add_task(_run_poll)
+    # AJAX calls get JSON, form submits get redirect
+    accept = request.headers.get("accept", "")
+    if "application/json" in accept:
+        return JSONResponse({"started": True})
     return RedirectResponse("/", status_code=303)
+
+
+@app.get("/api/poll/status")
+async def api_poll_status():
+    """Return current poll state for dashboard live updates."""
+    return JSONResponse(_poll_state)
 
 
 @app.post("/api/replay/{filename:path}")
@@ -1150,6 +1313,8 @@ def _run_poll():
     if not _poll_lock.acquire(blocking=False):
         logger.info("E-postsjekk kjorer allerede, hopper over")
         return
+    _poll_state["running"] = True
+    _poll_state["last_error"] = None
     try:
         from .config import require_graph_config, require_odoo_config
         from .graph_client import GraphClient
@@ -1182,11 +1347,86 @@ def _run_poll():
         monitor = EmailMonitor(graph_client=graph, odoo_service=odoo_service,
                                 archiver=archiver)
         results = monitor.poll()
+        _poll_state["last_result"] = len(results)
         logger.info("E-postsjekk ferdig: %d resultater", len(results))
     except Exception as e:
         logger.exception("E-postsjekk feilet: %s", e)
+        _poll_state["last_error"] = str(e)
     finally:
+        _poll_state["running"] = False
+        _poll_state["last_run"] = datetime.now().isoformat(timespec="seconds")
         _poll_lock.release()
+
+
+# ---------------------------------------------------------------------------
+# Daily scheduler
+# ---------------------------------------------------------------------------
+
+_scheduler_thread: threading.Thread | None = None
+_scheduler_stop = threading.Event()
+
+# Default: run at 07:00 every day. Override with POLL_SCHEDULE_HOUR in .env.
+_SCHEDULE_HOUR = 7
+
+
+def _get_schedule_hour() -> int:
+    from .config import load_config
+    cfg = load_config()
+    try:
+        return int(cfg.get("POLL_SCHEDULE_HOUR", str(_SCHEDULE_HOUR)))
+    except (ValueError, TypeError):
+        return _SCHEDULE_HOUR
+
+
+def _next_run_time() -> datetime:
+    """Calculate the next scheduled run time."""
+    hour = _get_schedule_hour()
+    now = datetime.now()
+    target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return target
+
+
+def _scheduler_loop():
+    """Background thread that triggers _run_poll() once daily."""
+    logger.info("Daglig e-postsjekk scheduler startet (kl. %02d:00)", _get_schedule_hour())
+    while not _scheduler_stop.is_set():
+        next_run = _next_run_time()
+        _poll_state["next_scheduled"] = next_run.isoformat(timespec="seconds")
+
+        # Sleep in short intervals so we can stop cleanly
+        while datetime.now() < next_run:
+            if _scheduler_stop.wait(timeout=30):
+                logger.info("Scheduler stoppet")
+                return
+
+        logger.info("Daglig planlagt e-postsjekk starter")
+        _run_poll()
+
+
+def start_scheduler():
+    """Start the daily poll scheduler (idempotent)."""
+    global _scheduler_thread
+    if _scheduler_thread and _scheduler_thread.is_alive():
+        return
+    _scheduler_stop.clear()
+    _scheduler_thread = threading.Thread(target=_scheduler_loop, daemon=True, name="poll-scheduler")
+    _scheduler_thread.start()
+
+
+def stop_scheduler():
+    """Stop the daily poll scheduler."""
+    _scheduler_stop.set()
+    if _scheduler_thread:
+        _scheduler_thread.join(timeout=5)
+
+
+# Auto-start scheduler when the dashboard app starts
+@app.on_event("startup")
+async def _on_startup():
+    start_scheduler()
+    logger.info("Dashboard startet med daglig e-postsjekk kl. %02d:00", _get_schedule_hour())
 
 
 def _run_replay(filename: str):
