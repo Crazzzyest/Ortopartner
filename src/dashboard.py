@@ -1450,31 +1450,25 @@ function checkPollStatus() {{
         .then(state => {{
             if (state.running) {{
                 updatePollUI(true, 'Sjekker e-post...');
-            }} else {{
-                // Poll finished — stop checking and refresh
+            }} else if (pollCheckInterval !== null) {{
+                // A poll *we triggered this session* just finished
                 clearInterval(pollCheckInterval);
                 pollCheckInterval = null;
 
-                if (state.last_error) {{
-                    updatePollUI(false, 'Feil: ' + state.last_error);
-                }} else if (state.last_result !== null) {{
-                    updatePollUI(false, state.last_result + ' ordre(r) behandlet');
-                }} else {{
-                    updatePollUI(false, '');
-                }}
-
-                // Re-enable button
                 const btn = document.getElementById('pollBtn');
                 btn.disabled = false;
                 btn.textContent = 'Sjekk e-post nå';
 
-                // Auto-refresh page after 1.5s to show new data
-                if (state.last_result > 0) {{
-                    setTimeout(() => window.location.reload(), 1500);
+                if (state.last_error) {{
+                    updatePollUI(false, 'Feil: ' + state.last_error);
+                }} else {{
+                    updatePollUI(false, (state.last_result || 0) + ' ordre(r) behandlet');
+                    if (state.last_result > 0) {{
+                        setTimeout(() => window.location.reload(), 1500);
+                    }}
                 }}
             }}
 
-            // Always update schedule info
             updateScheduleInfo(state);
         }})
         .catch(() => {{}});
