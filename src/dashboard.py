@@ -305,7 +305,7 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
     all_orders = _aggregate_orders(list_events(last_n=500))
     unknown_products = _aggregate_unknown_products(all_orders)
 
-    orders = _aggregate_orders(events)[:50]
+    orders = all_orders[:50]
 
     order_rows = ""
     for o in orders:
