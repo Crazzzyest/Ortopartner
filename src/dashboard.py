@@ -1522,7 +1522,7 @@ document.addEventListener('DOMContentLoaded', () => {{
 @app.get("/", response_class=HTMLResponse)
 async def dashboard():
     stats = _order_stats()
-    events = _recent_events(50)
+    events = _recent_events(500)
     dead_letters = list_dead_letters()
     return _render_dashboard(stats, events, dead_letters)
 
