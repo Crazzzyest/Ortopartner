@@ -360,8 +360,10 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
         message = _escape(o["message"] or "")
         ts_date = o["last_ts"][:10] if o.get("last_ts") else ""
 
+        is_test = "true" if o["order_number"] and o["order_number"].upper().startswith("TEST-") else "false"
+
         order_rows += f'''
-        <details class="order-row" data-status="{filter_status}" data-date="{ts_date}">
+        <details class="order-row" data-status="{filter_status}" data-date="{ts_date}" data-is-test="{is_test}" data-customer="{_escape(o['customer'] or '')}">
             <summary>
                 <span class="ordre-col">
                     <code>{order_num}</code>
@@ -983,6 +985,96 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
         margin-left: auto;
         font-weight: 500;
     }}
+
+    /* --- Filter banner --- */
+    .filter-banner {{
+        background: rgba(59, 130, 246, 0.08);
+        border: 1px solid rgba(59, 130, 246, 0.2);
+        border-radius: 10px;
+        padding: 10px 16px;
+        margin-bottom: 20px;
+        font-size: 12px;
+        color: #93c5fd;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }}
+
+    /* --- View toggle buttons --- */
+    .view-btns {{
+        display: flex;
+        gap: 2px;
+        background: rgba(30, 41, 59, 0.5);
+        border-radius: 10px;
+        padding: 3px;
+        border: 1px solid rgba(148, 163, 184, 0.1);
+        margin-left: 4px;
+    }}
+    .view-btn {{
+        padding: 6px 12px;
+        border: none;
+        background: transparent;
+        color: #64748b;
+        font-size: 15px;
+        cursor: pointer;
+        border-radius: 8px;
+        transition: all 0.15s;
+    }}
+    .view-btn:hover {{ color: #e2e8f0; background: rgba(148, 163, 184, 0.1); }}
+    .view-btn.active {{ background: linear-gradient(135deg, #3b82f6, #6366f1); color: #fff; }}
+
+    /* --- Insights view --- */
+    .insights-grid {{
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+        gap: 14px;
+        margin-bottom: 24px;
+    }}
+    .insight-card {{
+        background: rgba(15, 23, 42, 0.5);
+        border: 1px solid rgba(148, 163, 184, 0.08);
+        border-radius: 14px;
+        padding: 18px 20px;
+    }}
+    .insight-title {{
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: #64748b;
+        margin-bottom: 10px;
+    }}
+    .insight-big {{
+        font-size: 34px;
+        font-weight: 700;
+        color: #f1f5f9;
+        line-height: 1;
+        margin-bottom: 6px;
+    }}
+    .insight-sub {{ font-size: 11px; color: #475569; }}
+
+    .insight-section-title {{
+        font-size: 12px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: #64748b;
+        margin-bottom: 12px;
+    }}
+
+    /* --- Customer bars --- */
+    .customer-bars {{ display: flex; flex-direction: column; gap: 8px; }}
+    .cbar {{
+        display: grid;
+        grid-template-columns: 180px 1fr 40px;
+        align-items: center;
+        gap: 12px;
+        font-size: 12px;
+    }}
+    .cbar-name {{ color: #cbd5e1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+    .cbar-track {{ background: rgba(148, 163, 184, 0.08); border-radius: 4px; height: 8px; overflow: hidden; }}
+    .cbar-fill {{ height: 100%; border-radius: 4px; background: linear-gradient(90deg, #3b82f6, #6366f1); transition: width 0.4s; }}
+    .cbar-count {{ text-align: right; color: #64748b; font-variant-numeric: tabular-nums; }}
 </style>
 </head>
 <body>
@@ -1014,12 +1106,13 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
 {test_mode_banner}
 
 <div class="cards">
-    <div class="card blue"><div class="num">{stats['emails_processed']}</div><div class="label">E-poster</div></div>
-    <div class="card green"><div class="num">{stats['success']}</div><div class="label">Ordrer OK</div></div>
-    <div class="card yellow"><div class="num">{stats['review']}</div><div class="label">Til review</div></div>
-    <div class="card yellow"><div class="num">{stats['skipped']}</div><div class="label">Duplikater</div></div>
-    <div class="card red"><div class="num">{stats['dead_letters']}</div><div class="label">Feilede</div></div>
+    <div class="card blue"><div class="num" id="sc-emails">{stats['emails_processed']}</div><div class="label">E-poster</div></div>
+    <div class="card green"><div class="num" id="sc-ok" data-server="{stats['success']}">{stats['success']}</div><div class="label">Ordrer OK</div></div>
+    <div class="card yellow"><div class="num" id="sc-review" data-server="{stats['review']}">{stats['review']}</div><div class="label">Til review</div></div>
+    <div class="card yellow"><div class="num" id="sc-dup" data-server="{stats['skipped']}">{stats['skipped']}</div><div class="label">Duplikater</div></div>
+    <div class="card red"><div class="num" id="sc-err" data-server="{stats['dead_letters']}">{stats['dead_letters']}</div><div class="label">Feilede</div></div>
 </div>
+<div id="filterBanner" class="filter-banner" style="display:none;"></div>
 
 {"" if not dead_letters else f'''<section>
 <h2><span class="section-icon" style="background:rgba(239,68,68,0.15);">!</span> Feilede ordrer</h2>
@@ -1044,18 +1137,28 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
     <div class="filter-bar">
         <div class="filter-group">
             <label>Periode</label>
-            <button class="filter-btn active" data-filter="time" data-value="all" onclick="setFilter('time', 'all', this)">Alle</button>
-            <button class="filter-btn" data-filter="time" data-value="today" onclick="setFilter('time', 'today', this)">I dag</button>
-            <button class="filter-btn" data-filter="time" data-value="week" onclick="setFilter('time', 'week', this)">Denne uken</button>
-            <button class="filter-btn" data-filter="time" data-value="month" onclick="setFilter('time', 'month', this)">Denne mnd</button>
+            <button class="filter-btn active" onclick="setFilter('time', 'all', this)">Alle</button>
+            <button class="filter-btn" onclick="setFilter('time', 'today', this)">I dag</button>
+            <button class="filter-btn" onclick="setFilter('time', 'week', this)">Denne uken</button>
+            <button class="filter-btn" onclick="setFilter('time', 'month', this)">Denne mnd</button>
         </div>
         <div class="filter-group">
             <label>Status</label>
-            <button class="filter-btn active" data-filter="status" data-value="all" onclick="setFilter('status', 'all', this)">Alle</button>
-            <button class="filter-btn" data-filter="status" data-value="success" onclick="setFilter('status', 'success', this)">OK</button>
-            <button class="filter-btn" data-filter="status" data-value="review" onclick="setFilter('status', 'review', this)">Review</button>
-            <button class="filter-btn" data-filter="status" data-value="error" onclick="setFilter('status', 'error', this)">Feil</button>
-            <button class="filter-btn" data-filter="status" data-value="skipped" onclick="setFilter('status', 'skipped', this)">Duplikat</button>
+            <button class="filter-btn active" onclick="setFilter('status', 'all', this)">Alle</button>
+            <button class="filter-btn" onclick="setFilter('status', 'success', this)">OK</button>
+            <button class="filter-btn" onclick="setFilter('status', 'review', this)">Review</button>
+            <button class="filter-btn" onclick="setFilter('status', 'error', this)">Feil</button>
+            <button class="filter-btn" onclick="setFilter('status', 'skipped', this)">Duplikat</button>
+        </div>
+        <div class="filter-group">
+            <label>Vis</label>
+            <button class="filter-btn active" onclick="setFilter('scope', 'all', this)">Alle</button>
+            <button class="filter-btn" onclick="setFilter('scope', 'prod', this)">Produksjon</button>
+            <button class="filter-btn" onclick="setFilter('scope', 'test', this)">Test</button>
+        </div>
+        <div class="view-btns">
+            <button class="view-btn active" onclick="setView('list', this)" title="Liste">&#9776;</button>
+            <button class="view-btn" onclick="setView('insights', this)" title="Innsikt">&#9783;</button>
         </div>
         <span class="filter-result-count" id="filterCount"></span>
     </div>
@@ -1073,6 +1176,32 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
 </div>
 <div id="orderList">
 {order_rows}
+</div>
+<div id="insightsView" style="display:none; padding: 0 20px 20px;">
+    <div class="insights-grid">
+        <div class="insight-card">
+            <div class="insight-title">Suksessrate</div>
+            <div class="insight-big" id="ins-rate">—</div>
+            <div class="insight-sub" id="ins-rate-sub"></div>
+        </div>
+        <div class="insight-card">
+            <div class="insight-title">Snitt konfidensverdi</div>
+            <div class="insight-big" id="ins-conf">—</div>
+            <div class="insight-sub">Per behandlet ordre</div>
+        </div>
+        <div class="insight-card">
+            <div class="insight-title">Ordrer til review</div>
+            <div class="insight-big" id="ins-review">—</div>
+            <div class="insight-sub">Krever manuell sjekk</div>
+        </div>
+        <div class="insight-card">
+            <div class="insight-title">Test vs produksjon</div>
+            <div class="insight-big" id="ins-testprod">—</div>
+            <div class="insight-sub" id="ins-testprod-sub"></div>
+        </div>
+    </div>
+    <div class="insight-section-title">Ordrer per kunde <span id="ins-scope-label"></span></div>
+    <div id="ins-customers" class="customer-bars"></div>
 </div>
 '''}
 </section>
@@ -1097,8 +1226,9 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
 </div><!-- container -->
 
 <script>
-// ── Filter state ──────────────────────────────────────────────
-const filters = {{ time: 'all', status: 'all' }};
+// ── Filter + view state ───────────────────────────────────────
+const filters = {{ time: 'all', status: 'all', scope: 'all' }};
+let currentView = 'list';
 
 function setFilter(type, value, btn) {{
     filters[type] = value;
@@ -1106,6 +1236,15 @@ function setFilter(type, value, btn) {{
     group.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     applyFilters();
+}}
+
+function setView(view, btn) {{
+    currentView = view;
+    document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('orderList').style.display = view === 'list' ? '' : 'none';
+    document.getElementById('insightsView').style.display = view === 'insights' ? '' : 'none';
+    if (view === 'insights') updateInsights();
 }}
 
 function getDateStr(d) {{
@@ -1120,31 +1259,163 @@ function getWeekStart(d) {{
     return new Date(d.getFullYear(), d.getMonth(), diff);
 }}
 
-function applyFilters() {{
-    const rows = document.querySelectorAll('.order-row');
+function rowPassesTimeAndScope(row) {{
     const today = getDateStr(new Date());
     const weekStart = getDateStr(getWeekStart(new Date()));
     const monthStart = today.substring(0, 8) + '01';
-    let visible = 0, total = rows.length;
+    const rowDate = row.dataset.date;
+    const isTest = row.dataset.isTest === 'true';
+
+    if (filters.scope === 'prod' && isTest) return false;
+    if (filters.scope === 'test' && !isTest) return false;
+    if (filters.time === 'today' && rowDate !== today) return false;
+    if (filters.time === 'week' && rowDate < weekStart) return false;
+    if (filters.time === 'month' && rowDate < monthStart) return false;
+    return true;
+}}
+
+function applyFilters() {{
+    const rows = document.querySelectorAll('.order-row');
+    let visible = 0;
 
     rows.forEach(row => {{
-        let show = true;
         const rowStatus = row.dataset.status;
-        const rowDate = row.dataset.date;
-        if (filters.status !== 'all' && rowStatus !== filters.status) show = false;
-        if (show && filters.time !== 'all') {{
-            if (filters.time === 'today' && rowDate !== today) show = false;
-            else if (filters.time === 'week' && rowDate < weekStart) show = false;
-            else if (filters.time === 'month' && rowDate < monthStart) show = false;
-        }}
+        let show = rowPassesTimeAndScope(row);
+        if (show && filters.status !== 'all' && rowStatus !== filters.status) show = false;
         row.classList.toggle('hidden-by-filter', !show);
         if (show) visible++;
     }});
 
+    const total = rows.length;
     const countEl = document.getElementById('filterCount');
-    countEl.textContent = (filters.time === 'all' && filters.status === 'all')
-        ? total + ' ordrer'
-        : visible + ' av ' + total + ' ordrer';
+    const isFiltered = filters.time !== 'all' || filters.status !== 'all' || filters.scope !== 'all';
+    countEl.textContent = isFiltered ? visible + ' av ' + total + ' ordrer' : total + ' ordrer';
+
+    // Update stat cards from visible rows
+    updateStatCards(rows);
+
+    // Update filter banner
+    updateFilterBanner();
+
+    if (currentView === 'insights') updateInsights();
+}}
+
+function updateStatCards(rows) {{
+    // Only recount if scope filter is active (otherwise server stats are accurate)
+    if (filters.scope === 'all' && filters.time === 'all') {{
+        // Restore server-rendered values (stored as data attrs on the card elements)
+        ['sc-ok','sc-review','sc-dup','sc-err'].forEach(id => {{
+            const el = document.getElementById(id);
+            if (el && el.dataset.server) el.textContent = el.dataset.server;
+        }});
+        return;
+    }}
+    // Count from visible rows that pass time+scope (ignore status filter for stats)
+    let ok = 0, review = 0, dup = 0, err = 0;
+    rows.forEach(row => {{
+        if (!rowPassesTimeAndScope(row)) return;
+        const s = row.dataset.status;
+        if (s === 'success') ok++;
+        else if (s === 'review') review++;
+        else if (s === 'skipped') dup++;
+        else if (s === 'error') err++;
+    }});
+    setText('sc-ok', ok);
+    setText('sc-review', review);
+    setText('sc-dup', dup);
+    setText('sc-err', err);
+}}
+
+function setText(id, val) {{
+    const el = document.getElementById(id);
+    if (el) el.textContent = val;
+}}
+
+function updateFilterBanner() {{
+    const banner = document.getElementById('filterBanner');
+    const parts = [];
+    if (filters.scope === 'prod') parts.push('kun produksjonsordrer');
+    if (filters.scope === 'test') parts.push('kun testordrer');
+    if (filters.time === 'today') parts.push('i dag');
+    else if (filters.time === 'week') parts.push('denne uken');
+    else if (filters.time === 'month') parts.push('denne måneden');
+    if (filters.status !== 'all') parts.push('status: ' + filters.status);
+
+    if (parts.length) {{
+        banner.textContent = '⚡ Filter aktivt: ' + parts.join(' · ') + ' — statistikk oppdatert tilsvarende';
+        banner.style.display = 'flex';
+    }} else {{
+        banner.style.display = 'none';
+    }}
+}}
+
+function updateInsights() {{
+    const rows = document.querySelectorAll('.order-row');
+    let ok = 0, review = 0, dup = 0, err = 0, pending = 0;
+    let confTotal = 0, confCount = 0;
+    let testCount = 0, prodCount = 0;
+    const customerMap = {{}};
+
+    rows.forEach(row => {{
+        if (!rowPassesTimeAndScope(row)) return;
+        const s = row.dataset.status;
+        const isTest = row.dataset.isTest === 'true';
+        const customer = row.dataset.customer;
+
+        if (s === 'success') ok++;
+        else if (s === 'review') review++;
+        else if (s === 'skipped') dup++;
+        else if (s === 'error') err++;
+        else pending++;
+
+        if (isTest) testCount++; else prodCount++;
+
+        // Confidence from the conf-col span text
+        const confEl = row.querySelector('.conf-col');
+        if (confEl) {{
+            const pct = parseFloat(confEl.textContent);
+            if (!isNaN(pct)) {{ confTotal += pct; confCount++; }}
+        }}
+
+        // Customer breakdown
+        if (customer) {{
+            customerMap[customer] = (customerMap[customer] || 0) + 1;
+        }}
+    }});
+
+    const total = ok + review + dup + err + pending;
+    const processed = ok + review + dup + err;
+
+    // Suksessrate (ok + review av alt behandlet, ikke pending)
+    const rate = processed > 0 ? Math.round((ok + review) / processed * 100) : 0;
+    document.getElementById('ins-rate').textContent = rate + '%';
+    document.getElementById('ins-rate-sub').textContent = ok + ' OK, ' + review + ' til review av ' + processed;
+
+    // Konfidensverdi
+    const avgConf = confCount > 0 ? Math.round(confTotal / confCount) : 0;
+    document.getElementById('ins-conf').textContent = confCount > 0 ? avgConf + '%' : '—';
+
+    // Review count
+    document.getElementById('ins-review').textContent = review;
+
+    // Test vs prod
+    document.getElementById('ins-testprod').textContent = prodCount + ' / ' + testCount;
+    document.getElementById('ins-testprod-sub').textContent = 'Produksjon / test av ' + total + ' totalt';
+
+    // Scope label
+    const scopeLabels = {{ all: '', prod: '(produksjon)', test: '(test)' }};
+    document.getElementById('ins-scope-label').textContent = scopeLabels[filters.scope] || '';
+
+    // Customer bars
+    const sorted = Object.entries(customerMap).sort((a, b) => b[1] - a[1]).slice(0, 10);
+    const max = sorted[0] ? sorted[0][1] : 1;
+    const barsEl = document.getElementById('ins-customers');
+    barsEl.innerHTML = sorted.length ? sorted.map(([name, count]) => `
+        <div class="cbar">
+            <div class="cbar-name" title="${{name}}">${{name}}</div>
+            <div class="cbar-track"><div class="cbar-fill" style="width:${{Math.round(count/max*100)}}%"></div></div>
+            <div class="cbar-count">${{count}}</div>
+        </div>`).join('') : '<p style="color:#475569;font-size:13px;">Ingen data</p>';
 }}
 
 // ── Poll trigger + status ─────────────────────────────────────
