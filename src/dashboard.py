@@ -442,7 +442,7 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
             elif "files" in d:
                 details = f"{d['files']} filer"
         event_rows += f"""<tr>
-            <td>{ev['ts'][11:]}</td>
+            <td>{ev['ts'][:10]} {ev['ts'][11:19]}</td>
             <td><code>{ev['cid']}</code></td>
             <td>{ev['event']}</td>
             <td class="{status_class}">{ev['status']}</td>
