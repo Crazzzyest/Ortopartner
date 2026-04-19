@@ -1062,18 +1062,31 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
         margin-bottom: 12px;
     }}
 
+    /* --- Two-col insights layout --- */
+    .insights-two-col {{
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 24px;
+    }}
+    @media (max-width: 900px) {{
+        .insights-two-col {{ grid-template-columns: 1fr; }}
+    }}
+
     /* --- Customer bars --- */
     .customer-bars {{ display: flex; flex-direction: column; gap: 8px; }}
     .cbar {{
         display: grid;
-        grid-template-columns: 180px 1fr 40px;
+        grid-template-columns: 150px 1fr 48px;
         align-items: center;
-        gap: 12px;
+        gap: 10px;
         font-size: 12px;
     }}
     .cbar-name {{ color: #cbd5e1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
     .cbar-track {{ background: rgba(148, 163, 184, 0.08); border-radius: 4px; height: 8px; overflow: hidden; }}
     .cbar-fill {{ height: 100%; border-radius: 4px; background: linear-gradient(90deg, #3b82f6, #6366f1); transition: width 0.4s; }}
+    .cbar-fill.conf-high  {{ background: linear-gradient(90deg, #22c55e, #4ade80); }}
+    .cbar-fill.conf-mid   {{ background: linear-gradient(90deg, #eab308, #fbbf24); }}
+    .cbar-fill.conf-low   {{ background: linear-gradient(90deg, #ef4444, #f87171); }}
     .cbar-count {{ text-align: right; color: #64748b; font-variant-numeric: tabular-nums; }}
 </style>
 </head>
@@ -1200,8 +1213,16 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
             <div class="insight-sub" id="ins-testprod-sub"></div>
         </div>
     </div>
-    <div class="insight-section-title">Ordrer per kunde <span id="ins-scope-label"></span></div>
-    <div id="ins-customers" class="customer-bars"></div>
+    <div class="insights-two-col">
+        <div>
+            <div class="insight-section-title">Ordrer per kunde <span id="ins-scope-label"></span></div>
+            <div id="ins-customers" class="customer-bars"></div>
+        </div>
+        <div>
+            <div class="insight-section-title">Konfidens per kunde</div>
+            <div id="ins-confidence" class="customer-bars"></div>
+        </div>
+    </div>
 </div>
 '''}
 </section>
@@ -1355,6 +1376,7 @@ function updateInsights() {{
     let confTotal = 0, confCount = 0;
     let testCount = 0, prodCount = 0;
     const customerMap = {{}};
+    const customerConfMap = {{}};  // customer -> {{ total, count }}
 
     rows.forEach(row => {{
         if (!rowPassesTimeAndScope(row)) return;
@@ -1372,14 +1394,17 @@ function updateInsights() {{
 
         // Confidence from the conf-col span text
         const confEl = row.querySelector('.conf-col');
-        if (confEl) {{
-            const pct = parseFloat(confEl.textContent);
-            if (!isNaN(pct)) {{ confTotal += pct; confCount++; }}
-        }}
+        const pct = confEl ? parseFloat(confEl.textContent) : NaN;
+        if (!isNaN(pct)) {{ confTotal += pct; confCount++; }}
 
         // Customer breakdown
         if (customer) {{
             customerMap[customer] = (customerMap[customer] || 0) + 1;
+            if (!isNaN(pct)) {{
+                if (!customerConfMap[customer]) customerConfMap[customer] = {{ total: 0, count: 0 }};
+                customerConfMap[customer].total += pct;
+                customerConfMap[customer].count++;
+            }}
         }}
     }});
 
@@ -1406,16 +1431,32 @@ function updateInsights() {{
     const scopeLabels = {{ all: '', prod: '(produksjon)', test: '(test)' }};
     document.getElementById('ins-scope-label').textContent = scopeLabels[filters.scope] || '';
 
-    // Customer bars
+    // Ordrer per kunde
     const sorted = Object.entries(customerMap).sort((a, b) => b[1] - a[1]).slice(0, 10);
-    const max = sorted[0] ? sorted[0][1] : 1;
+    const maxOrders = sorted[0] ? sorted[0][1] : 1;
     const barsEl = document.getElementById('ins-customers');
     barsEl.innerHTML = sorted.length ? sorted.map(([name, count]) => `
         <div class="cbar">
             <div class="cbar-name" title="${{name}}">${{name}}</div>
-            <div class="cbar-track"><div class="cbar-fill" style="width:${{Math.round(count/max*100)}}%"></div></div>
+            <div class="cbar-track"><div class="cbar-fill" style="width:${{Math.round(count/maxOrders*100)}}%"></div></div>
             <div class="cbar-count">${{count}}</div>
         </div>`).join('') : '<p style="color:#475569;font-size:13px;">Ingen data</p>';
+
+    // Konfidens per kunde
+    const confEntries = Object.entries(customerConfMap)
+        .map(([name, d]) => [name, Math.round(d.total / d.count)])
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10);
+    const confBarsEl = document.getElementById('ins-confidence');
+    confBarsEl.innerHTML = confEntries.length ? confEntries.map(([name, avg]) => {{
+        const cls = avg >= 90 ? 'conf-high' : avg >= 75 ? 'conf-mid' : 'conf-low';
+        const color = avg >= 90 ? '#4ade80' : avg >= 75 ? '#fbbf24' : '#f87171';
+        return `<div class="cbar">
+            <div class="cbar-name" title="${{name}}">${{name}}</div>
+            <div class="cbar-track"><div class="cbar-fill ${{cls}}" style="width:${{avg}}%"></div></div>
+            <div class="cbar-count" style="color:${{color}}">${{avg}}%</div>
+        </div>`;
+    }}).join('') : '<p style="color:#475569;font-size:13px;">Ingen data</p>';
 }}
 
 // ── Poll trigger + status ─────────────────────────────────────
