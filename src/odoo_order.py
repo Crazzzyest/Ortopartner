@@ -255,13 +255,13 @@ class OdooOrderService:
     def _check_line_divergence(
         self, so_id: int, items: list[LineItem]
     ) -> list[str]:
-        """Compare PDF values vs Odoo-applied values for price_unit and discount.
+        """Compare PDF quantity vs Odoo-applied quantity for each line.
 
-        Divergences typically come from Odoo's onchange logic applying
-        partner-level contract discounts or pricelist rules that aren't
-        mentioned in the customer's PDF. We surface these as warnings
-        (not errors) — the values are most likely correct for production,
-        but a human should confirm before releasing the order.
+        Since we now always use Odoo catalog prices (not PDF prices), price
+        divergence checks are no longer relevant. What matters is that
+        quantity matches — Odoo can silently convert quantities via UoM
+        factors (e.g. "pakke" mapped to a UoM with a 2:1 factor), which
+        would produce wrong totals.
         """
         warnings: list[str] = []
 
@@ -269,7 +269,7 @@ class OdooOrderService:
             lines = self._client.search_read(
                 "sale.order.line",
                 [["order_id", "=", so_id]],
-                ["id", "sequence", "name", "price_unit", "discount", "product_uom_qty"],
+                ["id", "sequence", "name", "product_uom_qty", "price_unit", "discount"],
                 order="sequence, id",
             )
         except Exception as e:
@@ -287,57 +287,32 @@ class OdooOrderService:
             )
             return warnings
 
-        TOL = 0.01  # NOK/percent tolerance for float comparisons
+        TOL = 0.01
 
         for idx, (item, line) in enumerate(zip(items, lines), start=1):
-            pdf_price = float(item.unit_price or 0.0)
-            pdf_discount = float(item.discount_percent or 0.0)
-            odoo_price = float(line.get("price_unit") or 0.0)
-            odoo_discount = float(line.get("discount") or 0.0)
+            pdf_qty = float(item.quantity or 0.0)
+            odoo_qty = float(line.get("product_uom_qty") or 0.0)
 
             label = f"Linje {idx}"
             if item.article_number:
                 label = f"Linje {idx} ({item.article_number})"
 
-            # --- Unit price divergence ---
-            if pdf_price > TOL and abs(pdf_price - odoo_price) > TOL:
+            # --- Quantity divergence (critical) ---
+            if pdf_qty > TOL and abs(pdf_qty - odoo_qty) > TOL:
                 warnings.append(
-                    f"{label}: enhetspris-avvik — PDF sier {pdf_price:.2f} NOK, "
-                    f"Odoo anvendte {odoo_price:.2f} NOK (fra prislisten). "
-                    f"Dobbeltsjekk før bekreftelse."
-                )
-            elif pdf_price <= TOL and odoo_price > TOL:
-                warnings.append(
-                    f"{label}: PDF hadde ingen enhetspris — Odoo fylte inn "
-                    f"{odoo_price:.2f} NOK fra prislisten. Verifiser at dette stemmer."
-                )
-            elif pdf_price > TOL and odoo_price <= TOL:
-                warnings.append(
-                    f"{label}: PDF sier {pdf_price:.2f} NOK, men Odoo satte "
-                    f"enhetspris til 0. Mangler produktkobling/prisliste — "
-                    f"fyll inn pris manuelt."
+                    f"⚠️ {label}: ANTALL-AVVIK — PDF sier {pdf_qty:g}, "
+                    f"Odoo lagret {odoo_qty:g}. Sannsynlig årsak: UoM-konverteringsfaktor "
+                    f"på produktet (f.eks. 1 pakke = 2 Units). "
+                    f"Korriger antall manuelt eller sett riktig UoM på produktet i Odoo."
                 )
 
-            # --- Discount divergence ---
-            if abs(pdf_discount - odoo_discount) > TOL:
-                if pdf_discount <= TOL and odoo_discount > TOL:
-                    warnings.append(
-                        f"{label}: PDF hadde ingen rabatt — Odoo anvendte "
-                        f"{odoo_discount:.1f}% (kontraktsrabatt fra kundens "
-                        f"prisliste). Bekreft at dette er avtalt."
-                    )
-                elif pdf_discount > TOL and odoo_discount <= TOL:
-                    warnings.append(
-                        f"{label}: PDF sier {pdf_discount:.1f}% rabatt, men "
-                        f"Odoo anvendte ingen. Legg til manuelt eller sjekk "
-                        f"kundens prisliste."
-                    )
-                else:
-                    warnings.append(
-                        f"{label}: rabatt-avvik — PDF sier {pdf_discount:.1f}%, "
-                        f"Odoo anvendte {odoo_discount:.1f}%. Dobbeltsjekk før "
-                        f"bekreftelse."
-                    )
+            # --- Price sanity check (informational only) ---
+            odoo_price = float(line.get("price_unit") or 0.0)
+            if odoo_price <= TOL:
+                warnings.append(
+                    f"{label}: Odoo-prisen ble 0 etter opprettelse. "
+                    f"Produktet mangler list_price — fyll inn enhetspris manuelt."
+                )
 
         return warnings
 
@@ -383,21 +358,35 @@ class OdooOrderService:
             description = f"[{item.article_number}] {description}"
 
         # Determine price_unit:
-        # 1. Use PDF price if set
-        # 2. Else fall back to product.list_price (Odoo catalog) if we have a product
-        # 3. Else 0.0 (flagged as warning elsewhere)
-        # NB: Odoo 19 doesn't fire onchange_product_id on XML-RPC create(),
-        #     so a missing price_unit stays as 0 unless we fill it ourselves.
-        resolved_price = item.unit_price
-        if (resolved_price is None or resolved_price <= 0) and product_id:
+        # When a product is found in Odoo, always use Odoo's catalog price
+        # (list_price) — ignoring the PDF price entirely. This ensures
+        # quantity × price is always consistent with Odoo's own pricing,
+        # avoids conflicts with customer contract pricelists, and sidesteps
+        # Odoo 19's onchange_product_id not firing on XML-RPC create().
+        # When no product is found, fall back to the PDF price.
+        resolved_price: float | None = None
+        if product_id:
             catalog_price = self._fetch_product_list_price(product_id)
             if catalog_price and catalog_price > 0:
                 resolved_price = catalog_price
-                warnings.append(
-                    f"Linje {line_num}: Enhetspris hentet fra produktkatalog "
-                    f"(kr {catalog_price:.2f}) — PDF hadde ingen pris. "
-                    f"Verifiser mot kundens prisliste før bekreftelse."
-                )
+            else:
+                # Product exists but has no list_price — use PDF price as last resort
+                resolved_price = item.unit_price
+                if resolved_price and resolved_price > 0:
+                    warnings.append(
+                        f"Linje {line_num}: Produktet mangler prisliste i Odoo — "
+                        f"bruker PDF-pris ({resolved_price:.2f}) som nødløsning. "
+                        f"Sett list_price på produktet."
+                    )
+        else:
+            # No product match — use PDF price if available
+            resolved_price = item.unit_price
+
+        if resolved_price is None or resolved_price <= 0:
+            warnings.append(
+                f"Linje {line_num}: Ingen pris tilgjengelig (verken fra Odoo-katalog "
+                f"eller PDF). Fyll inn enhetspris manuelt."
+            )
 
         vals: dict = {
             "name": description,
@@ -409,7 +398,11 @@ class OdooOrderService:
         if product_id:
             vals["product_id"] = product_id
 
-        if item.discount_percent:
+        # Do not apply PDF discount when product is found — Odoo's pricelist
+        # and contract discounts will be applied server-side and are already
+        # reflected in the catalog price. Only carry the PDF discount through
+        # for unmatched (fallback/fritekst) lines where Odoo has no pricing.
+        if item.discount_percent and not product_id:
             vals["discount"] = item.discount_percent
 
         return vals, warnings
