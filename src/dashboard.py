@@ -334,9 +334,11 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
         }.get(status, "badge-pending")
 
         # Determine filter category: ok, review, error, skipped
-        filter_status = status  # success, skipped, error, pending
-        if o["review"] and status == "success":
+        # review takes priority regardless of underlying status
+        if o["review"]:
             filter_status = "review"
+        else:
+            filter_status = status
 
         review_badge = ""
         if o["review"]:

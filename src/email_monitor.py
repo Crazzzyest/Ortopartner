@@ -84,7 +84,7 @@ class EmailMonitor:
         # all historic emails after a redeploy (clean demo start).
         skip_before = os.environ.get("SKIP_EMAILS_BEFORE", "").strip()
         if skip_before:
-            from datetime import datetime, timezone
+            from datetime import datetime
             try:
                 cutoff = datetime.fromisoformat(skip_before.replace("Z", "+00:00"))
                 def _after_cutoff(m):
@@ -93,7 +93,16 @@ class EmailMonitor:
                         return datetime.fromisoformat(rd.replace("Z", "+00:00")) >= cutoff
                     except ValueError:
                         return True  # keep if unparseable
-                new_messages = [m for m in new_messages if _after_cutoff(m)]
+                kept, skipped_old = [], []
+                for m in new_messages:
+                    (kept if _after_cutoff(m) else skipped_old).append(m)
+                # Mark old messages as processed so they're never retried
+                for m in skipped_old:
+                    processed.add(m["id"])
+                if skipped_old:
+                    _save_processed(processed)
+                    logger.info("SKIP_EMAILS_BEFORE: ignorerte %d gamle meldinger", len(skipped_old))
+                new_messages = kept
             except ValueError:
                 logger.warning("Ugyldig SKIP_EMAILS_BEFORE-verdi: %s — ignorerer", skip_before)
             if not new_messages:
