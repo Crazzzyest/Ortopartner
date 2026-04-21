@@ -10,6 +10,11 @@ from .models import ParsedOrder
 _INFO_WARNING_PREFIXES = (
     "Enhetspris utledet fra totalbeløp",
     "Enhetspris hentet fra produktkatalog",
+    "Ingen priser oppgitt",           # Normal for kunder som ikke sender priser
+    "PDF hadde ingen enhetspris",      # Fra odoo divergence-sjekk, samme årsak
+    "Fremtidig dato",                  # Test-PDFer har alltid fremtidig dato
+    "Futuristisk dato",                # Alternativ formulering fra parser
+    "Verifiser mot kundens prisliste", # Informasjon, ikke feil
 )
 
 
