@@ -1445,10 +1445,11 @@ function updateInsights() {{
     const total = ok + review + dup + err + pending;
     const processed = ok + review + dup + err;
 
-    // Suksessrate (ok + review av alt behandlet, ikke pending)
-    const rate = processed > 0 ? Math.round((ok + review) / processed * 100) : 0;
+    // Suksessrate: ok + review av (ok + review + error) — duplikater teller ikke
+    const realProcessed = ok + review + err;
+    const rate = realProcessed > 0 ? Math.round((ok + review) / realProcessed * 100) : 0;
     document.getElementById('ins-rate').textContent = rate + '%';
-    document.getElementById('ins-rate-sub').textContent = ok + ' OK, ' + review + ' til review av ' + processed;
+    document.getElementById('ins-rate-sub').textContent = ok + ' OK, ' + review + ' til review av ' + realProcessed;
 
     // Konfidensverdi
     const avgConf = confCount > 0 ? Math.round(confTotal / confCount) : 0;
