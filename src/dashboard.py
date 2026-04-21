@@ -1062,13 +1062,16 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
         margin-bottom: 12px;
     }}
 
-    /* --- Two-col insights layout --- */
+    /* --- Three-col insights layout --- */
     .insights-two-col {{
         display: grid;
-        grid-template-columns: 1fr 1fr;
+        grid-template-columns: 1fr 1fr 1fr;
         gap: 24px;
     }}
-    @media (max-width: 900px) {{
+    @media (max-width: 1100px) {{
+        .insights-two-col {{ grid-template-columns: 1fr 1fr; }}
+    }}
+    @media (max-width: 700px) {{
         .insights-two-col {{ grid-template-columns: 1fr; }}
     }}
 
@@ -1221,6 +1224,10 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
         <div>
             <div class="insight-section-title">Konfidens per kunde</div>
             <div id="ins-confidence" class="customer-bars"></div>
+        </div>
+        <div>
+            <div class="insight-section-title">Til review per kunde</div>
+            <div id="ins-review-customers" class="customer-bars"></div>
         </div>
     </div>
 </div>
@@ -1377,6 +1384,7 @@ function updateInsights() {{
     let testCount = 0, prodCount = 0;
     const customerMap = {{}};
     const customerConfMap = {{}};  // customer -> {{ total, count }}
+    const customerReviewMap = {{}};  // customer -> review count
 
     rows.forEach(row => {{
         if (!rowPassesTimeAndScope(row)) return;
@@ -1404,6 +1412,9 @@ function updateInsights() {{
                 if (!customerConfMap[customer]) customerConfMap[customer] = {{ total: 0, count: 0 }};
                 customerConfMap[customer].total += pct;
                 customerConfMap[customer].count++;
+            }}
+            if (s === 'review') {{
+                customerReviewMap[customer] = (customerReviewMap[customer] || 0) + 1;
             }}
         }}
     }});
@@ -1457,6 +1468,20 @@ function updateInsights() {{
             <div class="cbar-count" style="color:${{color}}">${{avg}}%</div>
         </div>`;
     }}).join('') : '<p style="color:#475569;font-size:13px;">Ingen data</p>';
+
+    // Til review per kunde
+    const reviewEntries = Object.entries(customerReviewMap)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 10);
+    const maxReview = reviewEntries[0] ? reviewEntries[0][1] : 1;
+    const reviewBarsEl = document.getElementById('ins-review-customers');
+    reviewBarsEl.innerHTML = reviewEntries.length ? reviewEntries.map(([name, count]) => `
+        <div class="cbar">
+            <div class="cbar-name" title="${{name}}">${{name}}</div>
+            <div class="cbar-track"><div class="cbar-fill conf-mid" style="width:${{Math.round(count/maxReview*100)}}%"></div></div>
+            <div class="cbar-count" style="color:#fbbf24">${{count}}</div>
+        </div>`).join('')
+        : '<p style="color:#475569;font-size:13px;">Ingen til review</p>';
 }}
 
 // ── Poll trigger + status ─────────────────────────────────────

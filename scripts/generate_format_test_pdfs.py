@@ -1999,7 +1999,7 @@ def main():
     # ------------------------------------------------------------------
     # 1. Blatchford — 2 linjer, priser + Int. ordre ref
     # ------------------------------------------------------------------
-    blatchford_number = f"8000 BO-2026-{DATESTAMP}{UNIQ[-2:]}"
+    blatchford_number = f"TEST-BL-{DATESTAMP}{UNIQ[-4:]}"
     generate_blatchford(
         order_number=blatchford_number,
         lines=[
@@ -2015,7 +2015,7 @@ def main():
     # ------------------------------------------------------------------
     # 2. Bergen Mekaniske — 3 linjer inkl. transport, rabatt %-kolonne
     # ------------------------------------------------------------------
-    bm_number = f"9{UNIQ}"
+    bm_number = f"TEST-BM-{DATESTAMP}{UNIQ[-4:]}"
     generate_bergen_mekaniske(
         order_number=bm_number,
         lines=[
@@ -2033,7 +2033,7 @@ def main():
     # ------------------------------------------------------------------
     # 3. Ortopediteknikk — 1 linje, ingen pris i tabellen
     # ------------------------------------------------------------------
-    ot_number = f"OT-{DATESTAMP}{UNIQ[-3:]}"
+    ot_number = f"TEST-OT-{DATESTAMP}{UNIQ[-4:]}"
     generate_ortopediteknikk(
         order_number=ot_number,
         internal_ref=f"25{DATESTAMP}{UNIQ[-4:]}",
