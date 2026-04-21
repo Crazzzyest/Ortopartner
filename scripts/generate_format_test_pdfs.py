@@ -41,6 +41,8 @@ TODAY_ISO = NOW.strftime("%Y-%m-%d")
 # 6-digit suffix that changes every second — guarantees unique order numbers
 UNIQ = NOW.strftime("%H%M%S")
 DATESTAMP = NOW.strftime("%m%d")  # MMDD
+# Full date+time suffix used in filenames so they're human-readable
+FILE_SUFFIX = NOW.strftime("%Y%m%d_%H%M%S")
 
 
 def _fmt_nok(amount: float) -> str:
@@ -111,7 +113,7 @@ def _styles():
 # ------------------------------------------------------------------
 def generate_blatchford(order_number: str, lines, total: float):
     styles = _styles()
-    filename = f"Bestilling_Blatchford_{UNIQ}.pdf"
+    filename = f"Bestilling_Blatchford_{FILE_SUFFIX}.pdf"
     filepath = OUTPUT_DIR / filename
 
     doc = SimpleDocTemplate(
@@ -275,7 +277,7 @@ def generate_blatchford(order_number: str, lines, total: float):
 # ------------------------------------------------------------------
 def generate_bergen_mekaniske(order_number: str, lines, total: float):
     styles = _styles()
-    filename = f"Bestilling_BergenMekaniske_{UNIQ}.pdf"
+    filename = f"Bestilling_BergenMekaniske_{FILE_SUFFIX}.pdf"
     filepath = OUTPUT_DIR / filename
 
     doc = SimpleDocTemplate(
@@ -445,7 +447,7 @@ def generate_bergen_mekaniske(order_number: str, lines, total: float):
 # ------------------------------------------------------------------
 def generate_ortopediteknikk(order_number: str, lines, internal_ref: str):
     styles = _styles()
-    filename = f"Bestilling_Ortopediteknikk_{UNIQ}.pdf"
+    filename = f"Bestilling_Ortopediteknikk_{FILE_SUFFIX}.pdf"
     filepath = OUTPUT_DIR / filename
 
     doc = SimpleDocTemplate(
@@ -588,7 +590,7 @@ def generate_sophies_minde(order_number: str, lines, total: float):
     """Sophies Minde format: metadata box, multiple lines, 10% discount,
     internal order ref, delivery address right-aligned."""
     styles = _styles()
-    filename = f"Bestilling_SophiesMinde_{UNIQ}.pdf"
+    filename = f"Bestilling_SophiesMinde_{FILE_SUFFIX}.pdf"
     filepath = OUTPUT_DIR / filename
 
     doc = SimpleDocTemplate(
@@ -778,7 +780,7 @@ def generate_nto(order_number: str, lines):
     """NTO format: simple table with 'Rest' column instead of quantity,
     no price column. Header says 'BESTILLING'."""
     styles = _styles()
-    filename = f"Bestilling_NTO_{UNIQ}.pdf"
+    filename = f"Bestilling_NTO_{FILE_SUFFIX}.pdf"
     filepath = OUTPUT_DIR / filename
 
     doc = SimpleDocTemplate(
@@ -930,7 +932,7 @@ def generate_formotion(order_number: str, lines, total: float):
     """ForMotion format: 'INNKJØPSORDRE' header, leverandørnr,
     planned receipt date, CRT units, reference column."""
     styles = _styles()
-    filename = f"Innkjopsordre_ForMotion_{UNIQ}.pdf"
+    filename = f"Innkjopsordre_ForMotion_{FILE_SUFFIX}.pdf"
     filepath = OUTPUT_DIR / filename
 
     doc = SimpleDocTemplate(
@@ -1119,7 +1121,7 @@ def generate_teknomed_email(order_ref: str, lines_text: str):
     """Teknomed format: plain-text email printed as PDF.
     No structured table — just body text with article numbers inline."""
     styles = _styles()
-    filename = f"Bestilling_Teknomed_{UNIQ}.pdf"
+    filename = f"Bestilling_Teknomed_{FILE_SUFFIX}.pdf"
     filepath = OUTPUT_DIR / filename
 
     doc = SimpleDocTemplate(
@@ -1168,7 +1170,7 @@ def generate_osto(order_number: str, lines):
     """Østo format: own logo area, 'Merket' field, separate 'Lev. adr.' line,
     Produktnr/Beskrivelse/Enhet/Antall columns, NO prices."""
     styles = _styles()
-    filename = f"Bestilling_Osto_{UNIQ}.pdf"
+    filename = f"Bestilling_Osto_{FILE_SUFFIX}.pdf"
     filepath = OUTPUT_DIR / filename
 
     doc = SimpleDocTemplate(
@@ -1326,7 +1328,7 @@ def generate_blatchford_bergen(order_number: str, lines, total: float):
     """Blatchford Bergen variant: reuses Blatchford format but with Bergen
     address, Sjur Atle Pettersen, and many more lines (10)."""
     styles = _styles()
-    filename = f"Bestilling_BlatchfordBergen_{UNIQ}.pdf"
+    filename = f"Bestilling_BlatchfordBergen_{FILE_SUFFIX}.pdf"
     filepath = OUTPUT_DIR / filename
 
     doc = SimpleDocTemplate(
@@ -1637,7 +1639,7 @@ def generate_drevelin_email(order_ref: str, lines_text: str):
     """Drevelin format: freeform email order for prepreg material,
     non-standard units (kvm)."""
     styles = _styles()
-    filename = f"Bestilling_Drevelin_{UNIQ}.pdf"
+    filename = f"Bestilling_Drevelin_{FILE_SUFFIX}.pdf"
     filepath = OUTPUT_DIR / filename
 
     doc = SimpleDocTemplate(
@@ -1690,7 +1692,7 @@ def generate_ortopediteknikk_med_pris(order_number: str, lines, total: float):
     """Ortopediteknikk variant WITH prices and int.ordreref.
     Delivery to Lillestrøm instead of Oslo."""
     styles = _styles()
-    filename = f"Bestilling_OrtopediteknikkLillestrom_{UNIQ}.pdf"
+    filename = f"Bestilling_OrtopediteknikkLillestrom_{FILE_SUFFIX}.pdf"
     filepath = OUTPUT_DIR / filename
 
     doc = SimpleDocTemplate(
@@ -1843,7 +1845,7 @@ def generate_atteras(order_number: str, lines):
     """Atterås format: own branding, simple table with art/desc/int.ref/antall/enhet,
     no prices. Delivery to Bergen."""
     styles = _styles()
-    filename = f"Bestilling_Atteras_{UNIQ}.pdf"
+    filename = f"Bestilling_Atteras_{FILE_SUFFIX}.pdf"
     filepath = OUTPUT_DIR / filename
 
     doc = SimpleDocTemplate(
