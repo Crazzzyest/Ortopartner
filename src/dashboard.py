@@ -114,6 +114,16 @@ def _aggregate_orders(events: list[dict]) -> list[dict]:
       order_number, customer, status, so_name, confidence, review,
       warnings, total, line_count, last_ts, cid, events.
     """
+    # First pass: build cid → received_at from email_received events.
+    # These events have no "order" field so they'd be skipped below,
+    # but they carry the actual inbox arrival time via their cid.
+    cid_received: dict[str, str] = {}
+    for ev in events:
+        if ev.get("event") == "email_received":
+            ra = (ev.get("details") or {}).get("received_at")
+            if ra:
+                cid_received[ev["cid"]] = ra
+
     by_order: dict[str, dict] = {}
 
     for ev in events:
@@ -134,7 +144,7 @@ def _aggregate_orders(events: list[dict]) -> list[dict]:
             "line_count": None,
             "message": None,
             "last_ts": ev["ts"],
-            "email_received_at": None,
+            "email_received_at": cid_received.get(ev["cid"]),
             "cid": ev["cid"],
             "archived": False,
             "events": [],
@@ -146,11 +156,6 @@ def _aggregate_orders(events: list[dict]) -> list[dict]:
             state["cid"] = ev["cid"]
 
         details = ev.get("details") or {}
-
-        if ev["event"] == "email_received":
-            received = details.get("received_at")
-            if received and state["email_received_at"] is None:
-                state["email_received_at"] = received
 
         if ev["event"] == "pdf_parsed":
             if "confidence" in details and state["confidence"] is None:

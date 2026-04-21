@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 
 from .event_log import log_dead_letter, log_event, new_correlation_id
@@ -77,6 +78,19 @@ class EmailMonitor:
 
         # Filter out already processed
         new_messages = [m for m in messages if m["id"] not in processed]
+
+        # Optional: skip emails received before a cutoff date.
+        # Set SKIP_EMAILS_BEFORE=2026-04-21T12:00:00Z in env to ignore
+        # all historic emails after a redeploy (clean demo start).
+        skip_before = os.environ.get("SKIP_EMAILS_BEFORE", "").strip()
+        if skip_before:
+            new_messages = [
+                m for m in new_messages
+                if (m.get("receivedDateTime") or "") >= skip_before
+            ]
+            if not new_messages:
+                logger.info("Ingen nye meldinger etter cutoff %s", skip_before)
+                return results
 
         if not new_messages:
             logger.info("Ingen nye meldinger (alle %d allerede behandlet)", len(messages))
