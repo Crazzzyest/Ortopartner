@@ -111,10 +111,13 @@ class EmailMonitor:
 
             logger.info("  Fant %d PDF-vedlegg", len(pdf_attachments))
 
+            received_dt = msg.get("receivedDateTime")  # ISO 8601 from Graph API
+
             for att in pdf_attachments:
                 cid = new_correlation_id()
                 log_event(cid, "email_received", source_file=att["name"],
-                          details={"subject": subject, "sender": sender})
+                          details={"subject": subject, "sender": sender,
+                                   "received_at": received_dt})
                 result = self._process_attachment(msg_id, att, subject, sender, cid)
                 result["correlation_id"] = cid
                 results.append(result)

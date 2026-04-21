@@ -134,6 +134,7 @@ def _aggregate_orders(events: list[dict]) -> list[dict]:
             "line_count": None,
             "message": None,
             "last_ts": ev["ts"],
+            "email_received_at": None,
             "cid": ev["cid"],
             "archived": False,
             "events": [],
@@ -145,6 +146,11 @@ def _aggregate_orders(events: list[dict]) -> list[dict]:
             state["cid"] = ev["cid"]
 
         details = ev.get("details") or {}
+
+        if ev["event"] == "email_received":
+            received = details.get("received_at")
+            if received and state["email_received_at"] is None:
+                state["email_received_at"] = received
 
         if ev["event"] == "pdf_parsed":
             if "confidence" in details and state["confidence"] is None:
@@ -180,7 +186,7 @@ def _aggregate_orders(events: list[dict]) -> list[dict]:
                 state["message"] = details["error"]
 
     orders = list(by_order.values())
-    orders.sort(key=lambda o: o["last_ts"], reverse=True)
+    orders.sort(key=lambda o: o["email_received_at"] or o["last_ts"], reverse=True)
     return orders
 
 
@@ -358,7 +364,19 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
         total = _format_amount(o["total_amount"], o["currency"] or "NOK")
         line_count = o["line_count"] if o["line_count"] is not None else "-"
         message = _escape(o["message"] or "")
-        ts_date = o["last_ts"][:10] if o.get("last_ts") else ""
+        # Email received timestamp — prefer actual inbox arrival time over processing time
+        email_ra = o.get("email_received_at")  # e.g. "2026-04-21T07:35:29Z"
+        if email_ra:
+            # Normalize: strip trailing Z, replace T with space
+            email_ra_norm = email_ra.rstrip("Z").replace("T", " ")
+            sort_ts = email_ra_norm          # ISO-sortable for data-date
+            ts_date = email_ra_norm[:10]     # YYYY-MM-DD for time filter
+            ts_display = f'{email_ra_norm[8:10]}.{email_ra_norm[5:7]} {email_ra_norm[11:16]}'
+        else:
+            last = o.get("last_ts", "")
+            ts_date = last[:10]
+            sort_ts = last
+            ts_display = last[11:16] if len(last) > 16 else last[11:19]
 
         is_test = "true" if o["order_number"] and o["order_number"].upper().startswith("TEST-") else "false"
 
@@ -377,7 +395,7 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
                 <span class="lines-col">{line_count}</span>
                 <span class="total-col">{total}</span>
                 <span class="warn-col">{warn_summary}</span>
-                <span class="ts-col">{o["last_ts"][11:19]}</span>
+                <span class="ts-col" title="{email_ra or o.get('last_ts','')}">{ts_display}</span>
             </summary>
             <div class="order-detail">
                 <div class="order-meta">
@@ -1188,7 +1206,7 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
     <span>Linjer</span>
     <span style="text-align:right;">Total</span>
     <span>Advarsler</span>
-    <span style="text-align:right;">Tid</span>
+    <span style="text-align:right;">Mottatt</span>
 </div>
 <div id="orderList">
 {order_rows}
