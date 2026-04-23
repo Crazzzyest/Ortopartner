@@ -30,12 +30,15 @@ class DhlClient:
         Raises ValueError if tracking number not found.
         Raises ConnectionError on API failures.
         """
-        url = f"{self.base_url}/shipments/{tracking_number}/tracking"
-        logger.debug("DHL tracking request: %s", url)
+        # Correct DHL Express MyDHL API v2 endpoint:
+        # GET /tracking?shipmentTrackingNumber={tn}
+        url = f"{self.base_url}/tracking"
+        params = {"shipmentTrackingNumber": tracking_number}
+        logger.debug("DHL tracking request: %s %s", url, params)
 
         for attempt in range(2):
             try:
-                resp = self._session.get(url, timeout=15)
+                resp = self._session.get(url, params=params, timeout=15)
                 break
             except (requests.ConnectionError, requests.Timeout) as e:
                 if attempt == 0:
@@ -49,7 +52,7 @@ class DhlClient:
             retry_after = int(resp.headers.get("Retry-After", "5"))
             logger.warning("DHL rate limit, venter %ds", retry_after)
             time.sleep(retry_after)
-            resp = self._session.get(url, timeout=15)
+            resp = self._session.get(url, params=params, timeout=15)
 
         if resp.status_code == 404:
             raise ValueError(f"Trackingnummer ikke funnet: {tracking_number}")
