@@ -545,6 +545,101 @@ def _init_email_monitor(push_to_odoo: bool = False):
     )
 
 
+def cmd_verify_prod(folder: str) -> None:
+    """Verify partner+product mapping for all PDFs in folder against Odoo.
+
+    Skriver INGENTING til Odoo. Rapporterer kun hva som ville matchet,
+    hva som ville utløst warnings, og hva som ville feilet — slik at vi
+    kan rydde Odoo-data før første live-push.
+    """
+    from .odoo_mapper import OdooMapper
+
+    folder_path = Path(folder)
+    if not folder_path.is_dir():
+        print(f"Mappen finnes ikke: {folder}")
+        sys.exit(1)
+
+    pdfs = sorted(folder_path.glob("*.pdf"))
+    if not pdfs:
+        print(f"Ingen PDF-filer i {folder}")
+        return
+
+    service = _init_odoo_service()
+    mapper: OdooMapper = service._mapper  # gjenbruk autentisert mapper
+    transport_id = service._transport_product_id
+    fallback_id = service._fallback_product_id
+
+    print(f"\nVerifiserer {len(pdfs)} PDF-er mot prod-Odoo "
+          f"(skriver ingenting, kun lese-sjekk):\n")
+
+    summary_partners_found = 0
+    summary_partners_missing = 0
+    summary_lines_total = 0
+    summary_lines_matched = 0
+    summary_lines_transport = 0
+    summary_lines_fallback = 0
+    summary_lines_unmatched = 0
+
+    for pdf in pdfs:
+        print(f"[*] {pdf.name}")
+        try:
+            order = parse_order_pdf(pdf)
+        except Exception as e:
+            print(f"    PARSING FEILET: {e}\n")
+            continue
+
+        # Partner
+        partner_id = mapper._find_partner(order.customer_name or "", order)
+        if partner_id:
+            partner_info = mapper._client.search_read(
+                "res.partner", [("id", "=", partner_id)],
+                ["name", "city"], limit=1,
+            )[0]
+            city_suffix = f" / {partner_info['city']}" if partner_info.get("city") else ""
+            print(f"    Kunde: '{order.customer_name}' -> "
+                  f"id={partner_id} ({partner_info['name']}{city_suffix})")
+            summary_partners_found += 1
+        else:
+            print(f"    Kunde: '{order.customer_name}' -> IKKE FUNNET "
+                  f"(ville opprettet ny partner)")
+            summary_partners_missing += 1
+
+        # Linjer
+        for i, item in enumerate(order.line_items, 1):
+            summary_lines_total += 1
+            product_id = mapper.find_product(item.article_number or "")
+            if product_id:
+                summary_lines_matched += 1
+                continue
+
+            # ikke funnet — sjekk transport/fallback
+            if item.article_number and service._looks_like_transport(item) and transport_id:
+                print(f"    Linje {i}: art='{item.article_number}' "
+                      f"-> FRAKT-fallback (id={transport_id})")
+                summary_lines_transport += 1
+            elif fallback_id:
+                print(f"    Linje {i}: art='{item.article_number}' "
+                      f"-> FALLBACK (id={fallback_id})")
+                summary_lines_fallback += 1
+            else:
+                print(f"    Linje {i}: art='{item.article_number}' "
+                      f"desc='{(item.description or '')[:40]}' -> INGEN MATCH")
+                summary_lines_unmatched += 1
+        print()
+
+    # Oppsummering
+    print("=" * 60)
+    print("Oppsummering")
+    print("=" * 60)
+    print(f"  Kunder funnet:               {summary_partners_found}")
+    print(f"  Kunder som ville opprettes:  {summary_partners_missing}")
+    print(f"  Linjer totalt:               {summary_lines_total}")
+    print(f"    Matchet direkte:           {summary_lines_matched}")
+    print(f"    Transport-fallback:        {summary_lines_transport}")
+    print(f"    Diverse-fallback:          {summary_lines_fallback}")
+    print(f"    INGEN MATCH (manuell):     {summary_lines_unmatched}")
+
+
 def cmd_poll_email(push_to_odoo: bool = False) -> None:
     """Poll ordre@ortopartner.no for new orders."""
     print("Sjekker e-post (ordre@ortopartner.no)...")
@@ -583,6 +678,8 @@ def main():
         print()
         print("  python -m src --poll-email                       # Hent nye ordrer fra e-post")
         print("  python -m src --poll-email --push                # Hent + push til Odoo")
+        print()
+        print("  python -m src --verify-prod <mappe>              # Sjekk Odoo-mapping uten å skrive")
         print()
         print("  python -m src --set-tracking <SO> <trackingnr>   # Sett DHL trackingnr")
         print("  python -m src --track <SO>                       # Spor en leveranse")
@@ -634,6 +731,14 @@ def main():
             print("Bruk: python -m src --rollback <SO-navn>")
             sys.exit(1)
         cmd_rollback(args[1])
+        return
+
+    # --- Verify mapping mot prod (skriver ikke) ---
+    if args[0] == "--verify-prod":
+        if len(args) < 2:
+            print("Bruk: python -m src --verify-prod <mappe>")
+            sys.exit(1)
+        cmd_verify_prod(args[1])
         return
 
     # --- Email monitor commands ---

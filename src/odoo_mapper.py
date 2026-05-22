@@ -42,10 +42,14 @@ def _normalize_name(name: str) -> str:
     """Normalize a partner name for fuzzy comparison.
 
     Strips legal suffixes (AS, A/S), replaces Nordic chars (ø→o, æ→a, å→a),
-    removes extra whitespace, and lowercases.
+    removes extra whitespace, and lowercases. Splitter også på "/" og "-"
+    slik at "Oslo/Ryen" blir til to tokens ("oslo", "ryen") — viktig for
+    matching mot kunder som har flere bynavn i navnet.
     """
     name = _STRIP_SUFFIXES.sub("", name)
     name = re.sub(r"\([^)]*\)", "", name)  # remove parenthetical like "(Ikke bruk)"
+    # Konverter separator-tegn til mellomrom så hvert ord blir et eget token
+    name = re.sub(r"[\/\-]", " ", name)
     name = re.sub(r"\s+", " ", name).strip().lower()
     name = name.translate(_NORDIC_MAP)
     return name
@@ -102,7 +106,12 @@ class OdooMapper:
         4. City-based disambiguation for multi-location companies
         """
         # Normalize multiple whitespace to single space for matching
-        normalized_name = re.sub(r"\s+", " ", name).strip()
+        normalized_name = re.sub(r"\s+", " ", name or "").strip()
+
+        # Bail tidlig hvis vi ikke har et navn å søke etter — ellers ville
+        # tom ilike-pattern matchet ALLE partnere og gitt feil treff.
+        if not normalized_name:
+            return None
 
         # Step 1: Exact match
         results = self._client.search_read(
@@ -121,7 +130,7 @@ class OdooMapper:
         results = self._client.search_read(
             "res.partner",
             [["name", "ilike", ilike_pattern], ["customer_rank", ">", 0]],
-            ["id", "name", "city", "customer_rank"],
+            ["id", "name", "city", "customer_rank", "sale_order_count"],
             limit=20,
         )
         if len(results) == 1:
@@ -135,11 +144,19 @@ class OdooMapper:
                 if best:
                     return best
 
-            # Fall back to partner with highest customer_rank (most used)
-            results.sort(key=lambda r: r.get("customer_rank", 0), reverse=True)
+            # Fall back to partner with most sale orders (= faktisk aktiv kunde).
+            # Bedre enn customer_rank som kan være manuelt satt eller utdatert.
+            # Tie-break på customer_rank deretter.
+            results.sort(
+                key=lambda r: (r.get("sale_order_count", 0), r.get("customer_rank", 0)),
+                reverse=True,
+            )
             logger.info(
-                "Partner ilike-match (flere treff, bruker høyest rangert): '%s' -> '%s' (rank=%s)",
-                name, results[0]["name"], results[0].get("customer_rank", 0),
+                "Partner ilike-match (flere treff, bruker mest aktiv): '%s' -> '%s' "
+                "(sale_count=%s, rank=%s)",
+                name, results[0]["name"],
+                results[0].get("sale_order_count", 0),
+                results[0].get("customer_rank", 0),
             )
             return results[0]["id"]
 
@@ -182,7 +199,7 @@ class OdooMapper:
             self._all_partners = self._client.search_read(
                 "res.partner",
                 [["customer_rank", ">", 0]],
-                ["id", "name", "city"],
+                ["id", "name", "city", "sale_order_count"],
             )
 
         query_tokens = _name_tokens(name)
@@ -219,10 +236,17 @@ class OdooMapper:
             if city_match:
                 return city_match
 
+        # Tie-break på mest aktiv kunde (sale_order_count)
+        if len(best_candidates) > 1:
+            best_candidates.sort(
+                key=lambda p: p.get("sale_order_count", 0), reverse=True,
+            )
+
         result = best_candidates[0]
         logger.info(
-            "Partner fuzzy-match (score=%.0f%%): '%s' -> '%s'",
-            best_score * 100, name, result["name"],
+            "Partner fuzzy-match (score=%.0f%%, sale_count=%s): '%s' -> '%s'",
+            best_score * 100, result.get("sale_order_count", 0),
+            name, result["name"],
         )
         return result["id"]
 

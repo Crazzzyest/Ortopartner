@@ -14,7 +14,10 @@ class OdooClient:
     """XML-RPC client wrapping Odoo's external API."""
 
     def __init__(self, url: str, db: str, username: str, password: str):
-        self.url = url.rstrip("/")
+        # Strip both trailing slash og /odoo-suffix. Brukere kopierer ofte
+        # URL-en fra nettleseren (som inkluderer /odoo for web-appen),
+        # men XML-RPC-endpointet ligger på root-domenet.
+        self.url = url.rstrip("/").removesuffix("/odoo").rstrip("/")
         self.db = db
         self.username = username
         self.password = password

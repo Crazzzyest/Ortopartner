@@ -23,7 +23,7 @@ Din oppgave er å ekstrahere strukturerte data fra PDF-teksten og returnere et J
 
 - **order_number**: Bestillingsnr / Ordernr / Best. nr. (f.eks. "DV-119464", "POOCH055385", "438435")
 - **order_date**: Dato i ISO-format YYYY-MM-DD (konverter fra DD.MM.YYYY eller YYYY-MM-DD)
-- **customer_name**: Firmaet som bestiller (IKKE Ortopartner – det er mottaker). Se etter logo, header, bunntekst eller avsender.
+- **customer_name**: Firmaet som bestiller (IKKE Ortopartner – det er mottaker). Se etter logo, header, bunntekst eller avsender. **Inkluder ALLTID avdeling/filial hvis det er nevnt** — f.eks. "ForMotion Norway avd. Helsfyr" eller "Blatchford Ortopedi Bergen". Avdelingsnavn finnes ofte i header-blokken (over "Leveringsadresse"), etter selskapsnavnet, eller bak "avd."/"avdeling"/bynavn. Mange kjeder har flere avdelinger og avdelingsnavnet er essensielt for å identifisere rett kunde i ERP-systemet.
 - **customer_reference**: "Vår referanse" / kontaktperson hos bestiller
 - **internal_order_ref**: "Int. ordre ref." på hodenivå (om det finnes)
 - **currency**: Valuta (default NOK)
