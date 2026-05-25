@@ -50,38 +50,48 @@ def _recent_events(n: int = 50) -> list[dict]:
 
 
 def _order_stats() -> dict:
-    """Compute stats from event log."""
+    """Compute stats from event log, splittet på prod vs test-ordrer.
+
+    Ordrer prefikset med 'TEST-' regnes som test-data og holdes adskilt
+    fra prod-tallene. Top-level-feltene (total/success/...) viser prod
+    som default, slik at operatøren ser ekte tall ved første øyekast.
+    Test-bøtta returneres som under-dict ('test') for visning av samlet
+    test-aktivitet.
+    """
     events = list_events(last_n=1000)
-    total = 0
-    success = 0
-    skipped = 0
-    errors = 0
-    review = 0
+
+    def empty() -> dict:
+        return {"total": 0, "success": 0, "skipped": 0, "errors": 0, "review": 0}
+
+    prod = empty()
+    test = empty()
 
     for e in events:
+        order = (e.get("order") or "").upper()
+        bucket = test if order.startswith("TEST-") else prod
         if e["event"] == "odoo_push":
-            total += 1
+            bucket["total"] += 1
             if e["status"] == "success":
-                success += 1
+                bucket["success"] += 1
             elif e["status"] == "skipped":
-                skipped += 1
+                bucket["skipped"] += 1
             elif e["status"] == "error":
-                errors += 1
+                bucket["errors"] += 1
             details = e.get("details", {})
             if details.get("review"):
-                review += 1
+                bucket["review"] += 1
         if e["event"] == "failed":
-            total += 1
-            errors += 1
+            bucket["total"] += 1
+            bucket["errors"] += 1
 
     return {
-        "total": total,
-        "success": success,
-        "skipped": skipped,
-        "errors": errors,
-        "review": review,
+        # Top-level = prod-tall (det operatøren ser i kortene initielt)
+        **prod,
         "dead_letters": len(list_dead_letters()),
         "emails_processed": _count_processed(),
+        # Sub-bøtter for å vise test-aktivitet og JS-recounting
+        "prod": prod,
+        "test": test,
     }
 
 
@@ -1116,6 +1126,34 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
     .cbar-fill.conf-mid   {{ background: linear-gradient(90deg, #eab308, #fbbf24); }}
     .cbar-fill.conf-low   {{ background: linear-gradient(90deg, #ef4444, #f87171); }}
     .cbar-count {{ text-align: right; color: #64748b; font-variant-numeric: tabular-nums; }}
+
+    /* Test-data styling — dimmes når synlig (på 'Alle' eller 'Test' filter) */
+    .order-row[data-is-test="true"] {{
+        opacity: 0.65;
+    }}
+    .order-row[data-is-test="true"] summary::before {{
+        content: "TEST";
+        display: inline-block;
+        background: rgba(168, 85, 247, 0.18);
+        color: #c084fc;
+        font-size: 9px;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+        padding: 2px 5px;
+        border-radius: 3px;
+        margin-right: 8px;
+        vertical-align: middle;
+    }}
+    .test-hint {{
+        margin: -8px 0 16px 0;
+        padding: 8px 12px;
+        background: rgba(168, 85, 247, 0.08);
+        border-left: 2px solid rgba(168, 85, 247, 0.4);
+        color: #c084fc;
+        font-size: 12px;
+        border-radius: 0 4px 4px 0;
+    }}
+    .test-hint strong {{ color: #d8b4fe; font-weight: 600; }}
 </style>
 </head>
 <body>
@@ -1148,11 +1186,12 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
 
 <div class="cards">
     <div class="card blue"><div class="num" id="sc-emails">{stats['emails_processed']}</div><div class="label">E-poster</div></div>
-    <div class="card green"><div class="num" id="sc-ok" data-server="{stats['success']}">{stats['success']}</div><div class="label">Ordrer OK</div></div>
-    <div class="card yellow"><div class="num" id="sc-review" data-server="{stats['review']}">{stats['review']}</div><div class="label">Til review</div></div>
-    <div class="card yellow"><div class="num" id="sc-dup" data-server="{stats['skipped']}">{stats['skipped']}</div><div class="label">Duplikater</div></div>
-    <div class="card red"><div class="num" id="sc-err" data-server="{stats['dead_letters']}">{stats['dead_letters']}</div><div class="label">Feilede</div></div>
+    <div class="card green"><div class="num" id="sc-ok" data-server-prod="{stats['prod']['success']}" data-server-test="{stats['test']['success']}">{stats['prod']['success']}</div><div class="label">Ordrer OK</div></div>
+    <div class="card yellow"><div class="num" id="sc-review" data-server-prod="{stats['prod']['review']}" data-server-test="{stats['test']['review']}">{stats['prod']['review']}</div><div class="label">Til review</div></div>
+    <div class="card yellow"><div class="num" id="sc-dup" data-server-prod="{stats['prod']['skipped']}" data-server-test="{stats['test']['skipped']}">{stats['prod']['skipped']}</div><div class="label">Duplikater</div></div>
+    <div class="card red"><div class="num" id="sc-err" data-server-prod="{stats['dead_letters']}" data-server-test="{stats['test']['errors']}">{stats['dead_letters']}</div><div class="label">Feilede</div></div>
 </div>
+{f'<div class="test-hint" id="testHint">{stats["test"]["total"]} testordre{"r" if stats["test"]["total"] != 1 else ""} skjult — klikk <strong>Alle</strong> eller <strong>Test</strong> for å se</div>' if stats["test"]["total"] else ""}
 <div id="filterBanner" class="filter-banner" style="display:none;"></div>
 
 {"" if not dead_letters else f'''<section>
@@ -1193,8 +1232,8 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
         </div>
         <div class="filter-group">
             <label>Vis</label>
-            <button class="filter-btn active" onclick="setFilter('scope', 'all', this)">Alle</button>
-            <button class="filter-btn" onclick="setFilter('scope', 'prod', this)">Produksjon</button>
+            <button class="filter-btn" onclick="setFilter('scope', 'all', this)">Alle</button>
+            <button class="filter-btn active" onclick="setFilter('scope', 'prod', this)">Produksjon</button>
             <button class="filter-btn" onclick="setFilter('scope', 'test', this)">Test</button>
         </div>
         <div class="view-btns">
@@ -1280,7 +1319,7 @@ def _render_dashboard(stats: dict, events: list[dict], dead_letters: list[dict])
 
 <script>
 // ── Filter + view state ───────────────────────────────────────
-const filters = {{ time: 'all', status: 'all', scope: 'all' }};
+const filters = {{ time: 'all', status: 'all', scope: 'prod' }};
 let currentView = 'list';
 
 function setFilter(type, value, btn) {{
@@ -1354,12 +1393,14 @@ function applyFilters() {{
 }}
 
 function updateStatCards(rows) {{
-    // Only recount if scope filter is active (otherwise server stats are accurate)
-    if (filters.scope === 'all' && filters.time === 'all') {{
-        // Restore server-rendered values (stored as data attrs on the card elements)
+    // Fast path: når scope=prod (default) og time=all, vis server-prod-tall.
+    // Når scope=test og time=all, vis server-test-tall.
+    // Ellers: re-tell fra synlige rader.
+    if (filters.time === 'all' && (filters.scope === 'prod' || filters.scope === 'test')) {{
+        const attr = filters.scope === 'prod' ? 'serverProd' : 'serverTest';
         ['sc-ok','sc-review','sc-dup','sc-err'].forEach(id => {{
             const el = document.getElementById(id);
-            if (el && el.dataset.server) el.textContent = el.dataset.server;
+            if (el && el.dataset[attr] !== undefined) el.textContent = el.dataset[attr];
         }});
         return;
     }}
@@ -1387,7 +1428,8 @@ function setText(id, val) {{
 function updateFilterBanner() {{
     const banner = document.getElementById('filterBanner');
     const parts = [];
-    if (filters.scope === 'prod') parts.push('kun produksjonsordrer');
+    // scope=prod er default — ingen banner. Banner vises kun ved avvik.
+    if (filters.scope === 'all') parts.push('inkluderer testordrer');
     if (filters.scope === 'test') parts.push('kun testordrer');
     if (filters.time === 'today') parts.push('i dag');
     else if (filters.time === 'week') parts.push('denne uken');
@@ -1399,6 +1441,12 @@ function updateFilterBanner() {{
         banner.style.display = 'flex';
     }} else {{
         banner.style.display = 'none';
+    }}
+
+    // Vis/skjul test-hint basert på scope
+    const hint = document.getElementById('testHint');
+    if (hint) {{
+        hint.style.display = filters.scope === 'prod' ? '' : 'none';
     }}
 }}
 
