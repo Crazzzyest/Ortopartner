@@ -5,20 +5,79 @@ from __future__ import annotations
 import json
 import logging
 import re
+import secrets
 import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, Request
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 
 from .event_log import list_dead_letters, list_events, resolve_dead_letter
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Ortopartner Ordreflyt", version="1.0")
+# ---------------------------------------------------------------------------
+# HTTP Basic Auth — beskytter dashboard når DASHBOARD_PASSWORD er satt.
+# Hvis passord ikke er satt (lokal utvikling), hopper vi over auth-sjekken
+# men logger en advarsel ved oppstart.
+# ---------------------------------------------------------------------------
+
+_security = HTTPBasic(auto_error=False)
+
+
+def _verify_credentials(
+    credentials: HTTPBasicCredentials | None = Depends(_security),
+) -> str:
+    """Sjekk Basic Auth-credentials mot DASHBOARD_USERNAME/DASHBOARD_PASSWORD.
+
+    Hvis passordet ikke er satt i .env, hopper vi over sjekken (lokal dev).
+    Bruker secrets.compare_digest for konstant-tid-sammenligning så vi ikke
+    lekker info via timing-attacks.
+    """
+    from .config import load_config
+    cfg = load_config()
+    expected_user = cfg.get("DASHBOARD_USERNAME", "") or ""
+    expected_pass = cfg.get("DASHBOARD_PASSWORD", "") or ""
+
+    if not expected_pass:
+        # Auth disabled — kun for lokal utvikling
+        return "anonymous"
+
+    # Default-brukernavn hvis ikke satt
+    if not expected_user:
+        expected_user = "ortopartner"
+
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Innlogging kreves",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
+    user_ok = secrets.compare_digest(
+        credentials.username.encode("utf-8"), expected_user.encode("utf-8")
+    )
+    pass_ok = secrets.compare_digest(
+        credentials.password.encode("utf-8"), expected_pass.encode("utf-8")
+    )
+    if not (user_ok and pass_ok):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Feil brukernavn eller passord",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
+
+
+app = FastAPI(
+    title="Ortopartner Ordreflyt",
+    version="1.0",
+    dependencies=[Depends(_verify_credentials)],
+)
 
 # ---------------------------------------------------------------------------
 # Poll state tracking (visible to dashboard JS)
@@ -1830,6 +1889,17 @@ def stop_scheduler():
 # Auto-start scheduler when the dashboard app starts
 @app.on_event("startup")
 async def _on_startup():
+    from .config import load_config
+    cfg = load_config()
+    if not cfg.get("DASHBOARD_PASSWORD"):
+        logger.warning(
+            "DASHBOARD_PASSWORD ikke satt — dashbordet kjører UTEN innlogging. "
+            "Dette er kun trygt for lokal utvikling. Sett DASHBOARD_PASSWORD "
+            "i .env (eller Sliplane-environment) for å beskytte mot uautorisert tilgang."
+        )
+    else:
+        logger.info("Dashboard kjører med Basic Auth (bruker: %s)",
+                    cfg.get("DASHBOARD_USERNAME") or "ortopartner")
     start_scheduler()
     logger.info("Dashboard startet med daglig e-postsjekk kl. %02d:00", _get_schedule_hour())
 
