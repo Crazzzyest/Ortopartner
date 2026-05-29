@@ -1627,7 +1627,8 @@ function triggerPoll() {{
 
     fetch('/api/poll', {{
         method: 'POST',
-        headers: {{ 'Accept': 'application/json' }}
+        headers: {{ 'Accept': 'application/json' }},
+        credentials: 'include'
     }}).then(() => {{
         startPollStatusCheck();
     }}).catch(err => {{
@@ -1644,7 +1645,7 @@ function startPollStatusCheck() {{
 }}
 
 function checkPollStatus() {{
-    fetch('/api/poll/status')
+    fetch('/api/poll/status', {{ credentials: 'include' }})
         .then(r => r.json())
         .then(state => {{
             if (state.running) {{
