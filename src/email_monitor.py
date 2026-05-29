@@ -80,19 +80,32 @@ class EmailMonitor:
         new_messages = [m for m in messages if m["id"] not in processed]
 
         # Optional: skip emails received before a cutoff date.
-        # Set SKIP_EMAILS_BEFORE=2026-04-21T12:00:00Z in env to ignore
+        # Set SKIP_EMAILS_BEFORE=2026-05-25 (or ...T00:00:00Z) in env to ignore
         # all historic emails after a redeploy (clean demo start).
+        # Accepts bare date (YYYY-MM-DD) or full ISO-8601 with timezone.
         skip_before = os.environ.get("SKIP_EMAILS_BEFORE", "").strip()
         if skip_before:
-            from datetime import datetime
+            from datetime import datetime, timezone
             try:
-                cutoff = datetime.fromisoformat(skip_before.replace("Z", "+00:00"))
+                # Normalize: if only a date is given (no "T"), treat as midnight UTC
+                normalized = skip_before
+                if "T" not in normalized:
+                    normalized = normalized + "T00:00:00Z"
+                cutoff = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+                # Ensure cutoff is always timezone-aware (UTC) so comparisons work
+                if cutoff.tzinfo is None:
+                    cutoff = cutoff.replace(tzinfo=timezone.utc)
+
                 def _after_cutoff(m):
                     rd = m.get("receivedDateTime") or ""
                     try:
-                        return datetime.fromisoformat(rd.replace("Z", "+00:00")) >= cutoff
-                    except ValueError:
+                        dt = datetime.fromisoformat(rd.replace("Z", "+00:00"))
+                        if dt.tzinfo is None:
+                            dt = dt.replace(tzinfo=timezone.utc)
+                        return dt >= cutoff
+                    except (ValueError, TypeError):
                         return True  # keep if unparseable
+
                 kept, skipped_old = [], []
                 for m in new_messages:
                     (kept if _after_cutoff(m) else skipped_old).append(m)
@@ -103,8 +116,11 @@ class EmailMonitor:
                     _save_processed(processed)
                     logger.info("SKIP_EMAILS_BEFORE: ignorerte %d gamle meldinger", len(skipped_old))
                 new_messages = kept
-            except ValueError:
-                logger.warning("Ugyldig SKIP_EMAILS_BEFORE-verdi: %s — ignorerer", skip_before)
+            except (ValueError, TypeError) as exc:
+                logger.warning(
+                    "Ugyldig SKIP_EMAILS_BEFORE-verdi '%s' — ignorerer: %s",
+                    skip_before, exc,
+                )
             if not new_messages:
                 logger.info("Ingen nye meldinger etter cutoff %s", skip_before)
                 return results
